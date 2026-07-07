@@ -156,3 +156,14 @@ refactor(retry): extract common backoff calculation functions
 - Provider implementations should import this module and implement the `LLMProvider` interface
 - The module is designed for zero-dependency provider implementations (implementations only need this module and models)
 - Circuit breaker and health monitor can be composed around any `LLMProvider` implementation
+
+
+---
+
+## Constitutional Anti-Bluff Forensic Anchor (CONST-035 / §11.9, inherited)
+
+> Verbatim user mandate: *"We had been in position that all tests do execute with success and all Challenges as well, but in reality the most of the features does not work and can't be used! This MUST NOT be the case and execution of tests and Challenges MUST guarantee the quality, the completion and full usability by end users of the product!"*
+>
+> Operative rule: **The bar for shipping is not "tests pass" but "users can use the feature."** Every PASS in this codebase MUST carry positive runtime evidence captured during execution. Metadata-only / configuration-only / absence-of-error / grep-based PASS without runtime evidence are critical defects regardless of how green the summary line looks. No false-success results are tolerable.
+
+This anchor is inherited from the Helix Constitution (`constitution/Constitution.md` §11.9 / CONST-035); resolve it via `constitution/find_constitution.sh` from the parent project root. This submodule stays fully decoupled and project-not-aware (§11.4.28) — this is generic governance inheritance only, never project-specific context.
