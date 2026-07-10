@@ -365,7 +365,6 @@ func TestHealthMonitor_ForceCheck(t *testing.T) {
 		Enabled:          false,
 	}
 	hm := NewHealthMonitor(config)
-	hm.ctx = context.Background()
 
 	provider := &mockProvider{}
 	hm.RegisterProvider("test", provider)

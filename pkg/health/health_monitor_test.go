@@ -179,7 +179,6 @@ func TestHealthMonitor_DisabledDoesNotStart(t *testing.T) {
 func TestHealthMonitor_ForceCheck(t *testing.T) {
 	config := HealthMonitorConfig{HealthyThreshold: 1, Timeout: 5 * time.Second, Enabled: false}
 	hm := NewHealthMonitor(config)
-	hm.ctx = context.Background()
 	provider := &mockProvider{}
 	hm.RegisterProvider("test", provider)
 	err := hm.ForceCheck("test")
