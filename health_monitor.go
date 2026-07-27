@@ -186,7 +186,14 @@ func (hm *HealthMonitor) checkAllProviders() {
 
 // checkProvider checks health of a single provider
 func (hm *HealthMonitor) checkProvider(providerID string, provider LLMProvider) {
-	ctx, cancel := context.WithTimeout(hm.ctx, hm.config.Timeout)
+	// hm.ctx is only set by Start(). ForceCheck() may be invoked before Start()
+	// (a one-shot on-demand check is a legitimate public-API use), so fall back
+	// to context.Background() rather than panicking on a nil parent context.
+	parent := hm.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, hm.config.Timeout)
 	defer cancel()
 
 	start := time.Now()
