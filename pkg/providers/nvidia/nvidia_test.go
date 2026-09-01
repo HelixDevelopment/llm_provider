@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,16 +142,137 @@ func TestCompleteStream(t *testing.T) {
 	assert.GreaterOrEqual(t, responses, 1)
 }
 
+// modelsFixture serves an OpenAI-compatible /models response, which is the
+// shape pkg/discovery parses when no custom ResponseParser is configured. The
+// returned URL is a chat-completions base URL, so the provider derives its
+// models endpoint from it exactly as it does in production.
+func modelsFixture(t *testing.T, ids ...string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/models") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// The adapter must authenticate discovery, not just completions.
+		assert.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
+		data := make([]map[string]any, 0, len(ids))
+		for _, id := range ids {
+			data = append(data, map[string]any{"id": id, "object": "model"})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestGetCapabilities pins the ADAPTER'S BEHAVIOUR against a controlled
+// fixture.
+//
+// It used to construct a provider with a synthetic key and assert
+// `NotEmpty(SupportedModels)` against LIVE discovery. That is not a unit test:
+// it asserts that NVIDIA NIM is up and reachable from whatever machine runs it,
+// so it passed only on a host with egress. With HTTP(S)_PROXY pointed at a
+// closed port it failed with "Should NOT be empty, but was []".
+//
+// Worse, the thing it demanded is the OPPOSITE of the documented contract:
+// pkg/discovery returns nil when live discovery is unreachable (CONST-036, no
+// hardcoded fallback), so the old assertion required a CORRECT implementation
+// to fail.
 func TestGetCapabilities(t *testing.T) {
-	provider := NewNvidiaProvider("test-key", "", "")
+	srv := modelsFixture(t,
+		"meta/llama-3.1-8b-instruct",
+		"meta/llama-3.1-70b-instruct",
+		"nvidia/nv-embed-v1",
+	)
+	provider := NewNvidiaProvider("test-key", srv.URL+"/v1/chat/completions", "")
+
 	caps := provider.GetCapabilities()
 
 	assert.NotNil(t, caps)
-	assert.NotEmpty(t, caps.SupportedModels)
+	// Discovery reached the fixture and its result was plumbed into the
+	// capabilities — the behaviour the old assertion was reaching for.
+	assert.Contains(t, caps.SupportedModels, "meta/llama-3.1-8b-instruct")
+	assert.Contains(t, caps.SupportedModels, "meta/llama-3.1-70b-instruct")
+	// And the chat-model filter still applies to whatever the endpoint returns.
+	assert.NotContains(t, caps.SupportedModels, "nvidia/nv-embed-v1")
+
+	// The static half of the capability record, which was always deterministic
+	// and never needed a network at all.
 	assert.Contains(t, caps.SupportedFeatures, "text_completion")
 	assert.True(t, caps.SupportsStreaming)
 	assert.Equal(t, 16384, caps.Limits.MaxTokens)
 	assert.Equal(t, 131072, caps.Limits.MaxInputLength)
+}
+
+// TestGetCapabilitiesDiscoveryUnavailable is the honest-unavailability half.
+//
+// When discovery cannot answer, SupportedModels MUST be empty — never the
+// deprecated FallbackModels catalogue this provider still passes to the
+// discoverer. Serving that list would hand a caller model IDs it may not be
+// able to invoke, which CONST-036 calls a structural bluff. The names are
+// asserted individually because "empty" alone would also pass if the list
+// leaked through under a different key.
+func TestGetCapabilitiesDiscoveryUnavailable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	provider := NewNvidiaProvider("test-key", srv.URL+"/v1/chat/completions", "")
+	caps := provider.GetCapabilities()
+
+	require.NotNil(t, caps)
+	assert.Empty(t, caps.SupportedModels,
+		"unreachable discovery must report NO models, not a stale hardcoded catalogue (CONST-036)")
+	for _, fallback := range []string{
+		"meta/llama-3.1-8b-instruct",
+		"meta/llama-3.1-70b-instruct",
+		"meta/llama-3.2-1b-instruct",
+		"meta/llama-3.2-3b-instruct",
+	} {
+		assert.NotContains(t, caps.SupportedModels, fallback,
+			"the deprecated FallbackModels list must never reach a caller")
+	}
+	// The rest of the record is still served: unavailable models do not make
+	// the provider's fixed capabilities unknown.
+	assert.True(t, caps.SupportsStreaming)
+	assert.Equal(t, "NVIDIA NIM", caps.Metadata["provider"])
+}
+
+// TestModelsURLMatchesConstant guards the refactor that made the discovery
+// endpoint config-injectable: with the DEFAULT base URL it must still resolve
+// to the production constant, byte for byte. Without this, deriving the
+// endpoint could silently change where production traffic goes.
+func TestModelsURLMatchesConstant(t *testing.T) {
+	assert.Equal(t, NvidiaModelsURL, NewNvidiaProvider("k", "", "").modelsURL())
+}
+
+// TestGetCapabilitiesLiveDiscovery is the live probe, kept but made OPT-IN.
+//
+// It is genuinely useful — it is the only thing here that would notice NVIDIA
+// moving its models endpoint — but it depends on a third party and a real
+// credential, so it must never be part of the default suite. It SKIPS with a
+// stated reason rather than failing, because "nobody exported a key" is not a
+// defect in this adapter.
+//
+//	NVIDIA_LIVE_DISCOVERY_TEST=1 NVIDIA_API_KEY=<real key> go test ./pkg/providers/nvidia/
+func TestGetCapabilitiesLiveDiscovery(t *testing.T) {
+	if os.Getenv("NVIDIA_LIVE_DISCOVERY_TEST") == "" {
+		t.Skip("live discovery probe is opt-in: set NVIDIA_LIVE_DISCOVERY_TEST=1 " + // SKIP-OK: #opt-in-live-probe
+			"together with a real NVIDIA_API_KEY to run it")
+	}
+	apiKey := os.Getenv("NVIDIA_API_KEY")
+	if apiKey == "" {
+		t.Skip("NVIDIA_LIVE_DISCOVERY_TEST is set but NVIDIA_API_KEY is empty; a live " + // SKIP-OK: #opt-in-live-probe
+			"probe without a credential would measure the credential, not the adapter")
+	}
+
+	caps := NewNvidiaProvider(apiKey, "", "").GetCapabilities()
+	require.NotNil(t, caps)
+	assert.NotEmpty(t, caps.SupportedModels,
+		"live discovery with a real credential returned no models — either the "+
+			"NVIDIA models endpoint moved or the credential is not valid")
 }
 
 func TestValidateConfig(t *testing.T) {

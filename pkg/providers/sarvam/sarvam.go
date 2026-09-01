@@ -136,9 +136,21 @@ func NewSarvamProviderWithRetry(apiKey, baseURL, model string, retryConfig Retry
 		retryConfig: retryConfig,
 	}
 
+	// ModelsEndpoint is DERIVED from the configured base URL, not pinned to the
+	// production constant — the same CONST-051(B) config-injection fix already
+	// applied to HealthCheck via modelsURL() at the top of this file. Pinning it
+	// meant a caller could point this provider at a mirror, a proxy or a test
+	// double for completions while discovery silently kept talking to
+	// api.sarvam.ai, which is both a surprise in production and the reason
+	// TestGetCapabilities could only ever be an availability probe: no fixture
+	// could reach the code path.
+	//
+	// Production behaviour is unchanged. With the default base URL this
+	// evaluates to exactly SarvamModelsURL, and TestModelsURLMatchesConstant
+	// asserts that equality rather than leaving it to inspection.
 	p.discoverer = discovery.NewDiscoverer(discovery.ProviderConfig{
 		ProviderName:   "sarvam",
-		ModelsEndpoint: SarvamModelsURL,
+		ModelsEndpoint: p.modelsURL(),
 		ModelsDevID:    "sarvam",
 		APIKey:         apiKey,
 		FallbackModels: []string{
