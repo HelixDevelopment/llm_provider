@@ -298,9 +298,16 @@ func modelsFixture(t *testing.T, ids ...string) *httptest.Server {
 // fixtureEmbedding must contain that substring and the other two must not.
 // Nothing else about the real ids mattered to this test.
 const (
-	fixtureChatA     = "synthetic-chat-a"
-	fixtureChatB     = "synthetic-chat-b"
-	fixtureEmbedding = "synthetic-text-embedding-a"
+	fixtureChatA = "synthetic-chat-a"
+	fixtureChatB = "synthetic-chat-b"
+	// NOTE the spelling: "synthetic-embedding-a", NOT
+	// "synthetic-text-embedding-a". The latter contains the literal
+	// "text-embedding-", which scripts/audit-environment-assumptions.sh
+	// classifies as a real model id -- and it reported this line. A fixture
+	// only has to satisfy the filter under test, which keys on "embedding";
+	// borrowing a real vendor's naming convention on top of that is how a
+	// fixture becomes the next finding.
+	fixtureEmbedding = "synthetic-embedding-a"
 )
 
 func TestGetCapabilities(t *testing.T) {
