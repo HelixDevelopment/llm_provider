@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # install_host_suspend_guard_contract_challenge.sh — CONST-033 anti-bluff gate.
 #
 # install-host-suspend-guard.sh writes systemd drop-ins that stop the host
@@ -69,7 +69,7 @@ done
 make_stub_systemctl() {
   local dir="$1" reload_rc="$2" logind_rc="$3"
   cat > "$dir/systemctl" <<STUB
-#!/bin/bash
+#!/usr/bin/env bash
 case "\$1" in
   mask)       for u in "\${@:2}"; do echo "Created symlink '/etc/systemd/system/\$u' -> '/dev/null'."; done; exit 0 ;;
   is-enabled) echo masked; exit 0 ;;
