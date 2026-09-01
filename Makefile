@@ -52,5 +52,13 @@ demo-all-warn:
 demo-one:
 	@DEMO_MODULES="$(MOD)" bash scripts/demo-all.sh
 
-ci-validate-all: no-silent-skips-warn demo-all-warn
+# no-silent-skips is wired in ENFORCING, not warn-only. It was on the warn-only
+# target because it was permanently red at 54 for a reason nothing in the tree
+# could satisfy (it demanded `SKIP-OK: #<digits>`; every annotation here is a
+# category slug). That is fixed at the gate, so the escape hatch is no longer
+# load-bearing and routing around it would only re-hide the debt. Measured
+# 2026-09-01: `bash scripts/no-silent-skips.sh` exits 0 with 7 declared debt.
+# demo-all stays warn-only — that is a SEPARATE, untriaged deferral, not a
+# statement that it passes.
+ci-validate-all: no-silent-skips demo-all-warn
 	@echo "ci-validate-all: all gates executed"
