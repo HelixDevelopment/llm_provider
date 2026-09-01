@@ -14,6 +14,17 @@ import (
 )
 
 func TestNewOllamaProvider(t *testing.T) {
+	// The constructor now consults the environment when an argument is empty,
+	// so this test states the environment it assumes instead of inheriting
+	// whatever the machine happens to export. Without this it would pass on a
+	// clean workstation and fail on any host where an operator has legitimately
+	// exported OLLAMA_HOST — a test that depends on an unstated ambient
+	// condition is not measuring the constructor.
+	clearCanonical(t)
+	t.Setenv(EnvBaseURL, "")
+	t.Setenv(EnvModel, "")
+	t.Setenv(EnvTimeout, "")
+
 	tests := []struct {
 		name     string
 		baseURL  string
