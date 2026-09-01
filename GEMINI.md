@@ -1,12 +1,12 @@
-# QWEN.md — LLMProvider
+# GEMINI.md — LLMProvider
 
-## INHERITED FROM constitution/QWEN.md
+## INHERITED FROM constitution/GEMINI.md
 
 **The inheritance below is conditional. Both cases are stated; neither is
 assumed.**
 
 When this module is consumed inside a project that includes the Helix
-Constitution submodule, the rules in `constitution/QWEN.md` — and in the
+Constitution submodule, the rules in `constitution/GEMINI.md` — and in the
 `constitution/Constitution.md` it references — are authoritative for every
 topic not covered here. The module-local rules below extend them; they never
 weaken or override them.
@@ -17,7 +17,7 @@ the module-local rules below apply**.
 
 ### Locating the base file: a resolver, never a path
 
-`constitution/QWEN.md` in the heading above is the **canonical name of the base
+`constitution/GEMINI.md` in the heading above is the **canonical name of the base
 file**, written exactly as the constitution's own examples write it. It is not
 a filesystem path relative to this module, and it must not be rewritten into
 one:
@@ -39,7 +39,7 @@ constitution is reachable — which is precisely the standalone case above.
 This file therefore hardcodes **no** parent-project path and **no**
 depth-dependent path, keeping the module project-not-aware, decoupled and
 reusable per §11.4.28(B). Agent tooling with a native file-import syntax must
-not turn the heading into one: an `@constitution/QWEN.md` import resolves
+not turn the heading into one: an `@constitution/GEMINI.md` import resolves
 relative to *this* file, so inside a module it points at a path that does not
 exist and silently resolves to nothing.
 
@@ -48,7 +48,7 @@ Canonical reference:
 
 ## Module-local notes
 
-This carrier is read by Qwen Code.
+This carrier is read by Gemini CLI.
 
 See [`README.md`](README.md) for what this module is and how it is used.
 Module-specific rules go below this line; they extend the inherited base rules
