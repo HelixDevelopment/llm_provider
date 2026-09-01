@@ -201,13 +201,32 @@ elif ! fix_iso=$(portable_iso "$fix_mtime"); then
     "host — cannot anchor the journal window to the fix time"
 else
   echo "    fix applied at: $fix_iso"
-  # journalctl's own failure must not be laundered into "0 events found".
-  if ! journal_text=$(journalctl --since "$fix_iso" --no-pager 2>/dev/null); then
-    assert_undet "journalctl --since '$fix_iso' failed — the journal could not" \
-      "be read, so suspend events can be neither confirmed nor ruled out"
+
+  # journalctl's own failure must not be laundered into "0 events found" — but
+  # the journal MUST NOT be buffered to get that. The window here is open-ended
+  # (it starts when the guard was installed, which can be months ago): measured
+  # on the development host, `journalctl --since` over that window had already
+  # streamed more than 190 MB after 100 seconds and was still going. Capturing
+  # it with `$(...)` puts the whole thing in one shell variable and the shell
+  # dies — observed as rc=139, SIGSEGV, on a run that used to exit 0.
+  #
+  # So the pipeline is preserved, exactly as it always was, and grep counts in
+  # constant memory. journalctl's exit status is recovered from PIPESTATUS[0],
+  # which is only readable immediately after the pipeline and only when the
+  # pipeline is NOT itself inside a command substitution — hence the small
+  # scratch file rather than a nested `$( )`. No mktemp: it is one more tool to
+  # depend on, and $$ plus a trap is enough.
+  scratch="${TMPDIR:-/tmp}/host_no_auto_suspend_challenge.$$"
+  trap 'rm -f "$scratch"' EXIT
+  journalctl --since "$fix_iso" --no-pager 2>/dev/null \
+    | { grep -c "The system will suspend now" || true; } > "$scratch"
+  journal_rc=${PIPESTATUS[0]}
+
+  if [[ "$journal_rc" -ne 0 ]]; then
+    assert_undet "journalctl --since '$fix_iso' exited $journal_rc — the journal" \
+      "could not be read, so suspend events can be neither confirmed nor ruled out"
   else
-    count=$(printf '%s\n' "$journal_text" \
-      | { grep -c "The system will suspend now" || true; })
+    count=$(head -n1 "$scratch" | tr -dc '0-9')
     count=${count:-0}
     echo "    'will suspend' broadcasts since fix: $count"
     if [[ "$count" -eq 0 ]]; then
@@ -216,6 +235,7 @@ else
       assert_fail "$count suspend events since fix — masking didn't take"
     fi
   fi
+  rm -f "$scratch"
 fi
 
 echo

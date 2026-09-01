@@ -14,8 +14,8 @@
 # it with FAIL sends an operator to repair something that was never there,
 # while the host stays free to suspend by a route this challenge never looks at.
 #
-# This challenge drives the challenge-under-test through six host conditions —
-# four of which cannot occur on the machine running it — and asserts its exit
+# This challenge drives the challenge-under-test through eight host conditions —
+# five of which cannot occur on the machine running it — and asserts its exit
 # code against the three-valued contract declared in its own header:
 #
 #   0 = guard verified active
@@ -111,8 +111,9 @@ seed_dropins() {
 # Runs the challenge with /etc/systemd bound over a throwaway dir and
 # /run/systemd replaced by a tmpfs. Echoes stdout+stderr; returns its exit code.
 # $1 = label, $2 = PATH to use, $3 = "booted" | "notbooted"
+# $4 = optional `ulimit -v` cap in KiB, applied to the challenge only
 run_sut() {
-  local label="$1" bindir="$2" booted="$3"
+  local label="$1" bindir="$2" booted="$3" vcap="${4:-}"
   local fake="$WORK/etc_$label"
   unshare -rm bash -c '
     mount --make-rprivate / 2>/dev/null
@@ -120,6 +121,7 @@ run_sut() {
     if [ "'"$booted"'" = "booted" ]; then mkdir -p /run/systemd/system; fi
     mount --bind "'"$fake"'" /etc/systemd || exit 99
     export PATH="'"$bindir"'"
+    if [ -n "'"$vcap"'" ]; then ulimit -v '"${vcap:-0}"' || exit 99; fi
     bash "'"$SUT"'"
   ' 2>&1
 }
@@ -128,7 +130,7 @@ run_sut() {
 # 1. THE REGRESSION THIS GATE EXISTS FOR, part one. No systemctl anywhere:
 #    the guard is INAPPLICABLE, not broken. Before the fix this returned 1.
 # ---------------------------------------------------------------------------
-echo "[1/6] host without systemd (no systemctl on PATH)"
+echo "[1/8] host without systemd (no systemctl on PATH)"
 mkdir -p "$WORK/etc_nosystemctl"
 out="$(run_sut nosystemctl "$WORK/bin" notbooted)"; rc=$?
 echo "    exit=$rc"
@@ -149,7 +151,7 @@ fi
 #    unit files on disk, so it returns a state and no error — a challenge that
 #    trusts that answer believes it measured a running manager.
 # ---------------------------------------------------------------------------
-echo "[2/6] systemctl present but host not booted with systemd"
+echo "[2/8] systemctl present but host not booted with systemd"
 mkdir -p "$WORK/bin_static" && cp -a "$WORK/bin/." "$WORK/bin_static/"
 make_stub_systemctl "$WORK/bin_static" static
 mkdir -p "$WORK/etc_notbooted"
@@ -165,7 +167,7 @@ fi
 # 3. Everything in place on a live systemd host. The contract must still be
 #    able to say 0 — a fix that only ever reports 2 is also a bluff.
 # ---------------------------------------------------------------------------
-echo "[3/6] systemd live, guard fully in place"
+echo "[3/8] systemd live, guard fully in place"
 mkdir -p "$WORK/bin_ok" && cp -a "$WORK/bin/." "$WORK/bin_ok/"
 make_stub_systemctl "$WORK/bin_ok" masked
 make_stub_journalctl "$WORK/bin_ok" "-- No entries --"
@@ -183,7 +185,7 @@ fi
 #    must stay a 1. This is the assertion that stops the fix from degenerating
 #    into "call everything undetermined".
 # ---------------------------------------------------------------------------
-echo "[4/6] systemd live, sleep targets unmasked (genuine defect)"
+echo "[4/8] systemd live, sleep targets unmasked (genuine defect)"
 mkdir -p "$WORK/bin_broken" && cp -a "$WORK/bin/." "$WORK/bin_broken/"
 make_stub_systemctl "$WORK/bin_broken" static
 make_stub_journalctl "$WORK/bin_broken" "-- No entries --"
@@ -200,7 +202,7 @@ fi
 # 5. A live systemd host where the guard was never installed. Determinate:
 #    the marker is absent and that is directly actionable. 1, not 2.
 # ---------------------------------------------------------------------------
-echo "[5/6] systemd live, guard never installed (no drop-ins)"
+echo "[5/8] systemd live, guard never installed (no drop-ins)"
 mkdir -p "$WORK/etc_nomarker"
 out="$(run_sut nomarker "$WORK/bin_ok" booted)"; rc=$?
 echo "    exit=$rc"
@@ -216,7 +218,7 @@ fi
 #    honest verdict is 2 — reporting 0 would claim a clean suspend history that
 #    was never actually looked at.
 # ---------------------------------------------------------------------------
-echo "[6/6] systemd live, guard in place, journal unreadable"
+echo "[6/8] systemd live, guard in place, journal unreadable"
 mkdir -p "$WORK/bin_nojournal" && cp -a "$WORK/bin/." "$WORK/bin_nojournal/"
 make_stub_systemctl "$WORK/bin_nojournal" masked
 rm -f "$WORK/bin_nojournal/journalctl"
@@ -232,6 +234,81 @@ if grep -q "UNDETERMINED" <<<"$out"; then
   assert_pass "journal unreadable -> said so explicitly (not silently skipped)"
 else
   assert_fail "journal unreadable -> did not report the assertion as undetermined"
+fi
+
+# ---------------------------------------------------------------------------
+# 7. The journal actually CONTAINS a suspend broadcast. Everything else is in
+#    place, so this isolates the counting itself: a challenge that reads the
+#    journal but miscounts would pass cases 1-6 unchanged and still miss the
+#    one event the whole assertion exists to find.
+# ---------------------------------------------------------------------------
+echo "[7/8] systemd live, guard in place, but the journal shows a suspend"
+mkdir -p "$WORK/bin_suspended" && cp -a "$WORK/bin/." "$WORK/bin_suspended/"
+make_stub_systemctl "$WORK/bin_suspended" masked
+make_stub_journalctl "$WORK/bin_suspended" \
+  "May 01 03:14:07 host systemd-logind[1183]: The system will suspend now!"
+seed_dropins "$WORK/etc_suspended"
+out="$(run_sut suspended "$WORK/bin_suspended" booted)"; rc=$?
+echo "    exit=$rc"
+if [[ "$rc" -eq 1 ]]; then
+  assert_pass "suspend event in the journal -> exit 1 (masking didn't take)"
+else
+  assert_fail "suspend event in the journal -> exit $rc, want 1. Output: $(echo "$out" | tail -n3 | tr '\n' ' ')"
+fi
+
+# ---------------------------------------------------------------------------
+# 8. THE REGRESSION THIS CASE EXISTS FOR. The journal window is open-ended — it
+#    starts when the guard was installed, which can be months back — so the
+#    journal must be STREAMED, never buffered. A first draft of this very fix
+#    captured it with `$(journalctl ...)`; measured on the development host that
+#    window was already past 190 MB after 100 seconds and still going, and the
+#    challenge died with rc=139 (SIGSEGV) on a run that had previously exited 0.
+#
+#    This case does NOT try to reproduce that by brute-forcing a journal big
+#    enough to exhaust the machine — that would be slow, unbounded, and unkind
+#    to whatever else the host is running. It tests the PROPERTY instead: a
+#    streaming implementation uses memory independent of journal size, so it
+#    survives inside a small address space, while a buffering one needs memory
+#    proportional to the journal and cannot.
+#
+#    Calibrated on this host: with `ulimit -v 200000` (~200 MB) and a 64 MB
+#    journal, streaming exits 0 while buffering dies with
+#    "xrealloc: cannot allocate ... bytes" and rc=2.
+# ---------------------------------------------------------------------------
+echo "[8/8] systemd live, large journal in a small address space (must stream)"
+VCAP_KIB=200000
+JOURNAL_BYTES=67108864
+mkdir -p "$WORK/bin_bigjournal" && cp -a "$WORK/bin/." "$WORK/bin_bigjournal/"
+make_stub_systemctl "$WORK/bin_bigjournal" masked
+for b in yes head; do
+  p="$(command -v "$b" 2>/dev/null)" && ln -sf "$p" "$WORK/bin_bigjournal/$b"
+done
+cat > "$WORK/bin_bigjournal/journalctl" <<STUB
+#!/usr/bin/env bash
+# A journal-shaped stream of ${JOURNAL_BYTES} bytes, none of it matching.
+yes "Sep 01 12:00:00 host kernel: an ordinary uninteresting log line for padding" \
+  | head -c ${JOURNAL_BYTES}
+exit 0
+STUB
+chmod +x "$WORK/bin_bigjournal/journalctl"
+seed_dropins "$WORK/etc_bigjournal"
+
+# Sanity: the cap must actually be applicable here, or this case proves nothing.
+if ! ( ulimit -v "$VCAP_KIB" && true ) 2>/dev/null; then
+  assert_fail "cannot apply 'ulimit -v $VCAP_KIB' on this host — case 8 could not judge"
+else
+  out="$(run_sut bigjournal "$WORK/bin_bigjournal" booted "$VCAP_KIB")"; rc=$?
+  echo "    exit=$rc  (journal $((JOURNAL_BYTES / 1048576)) MB, ulimit -v ${VCAP_KIB} KiB)"
+  if [[ "$rc" -eq 0 ]]; then
+    assert_pass "large journal in a small address space -> exit 0 (streamed)"
+  else
+    assert_fail "large journal -> exit $rc, want 0 — the journal is being buffered, not streamed. Output: $(echo "$out" | tail -n2 | tr '\n' ' ')"
+  fi
+  if grep -qE 'xrealloc|cannot allocate|Killed' <<<"$out"; then
+    assert_fail "large journal -> allocation failure in the challenge: $(grep -oE '(xrealloc|cannot allocate)[^\n]*' <<<"$out" | head -1)"
+  else
+    assert_pass "large journal -> no allocation failure (memory use is independent of journal size)"
+  fi
 fi
 
 echo
