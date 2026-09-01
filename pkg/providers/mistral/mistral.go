@@ -15,6 +15,7 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 	"github.com/sirupsen/logrus"
 )
 
@@ -148,7 +149,11 @@ func NewMistralProviderWithRetry(apiKey, baseURL, model string, retryConfig Retr
 		baseURL = MistralAPIURL
 	}
 	if model == "" {
-		model = MistralModel
+		// The compiled constant is a FALLBACK, not a decision this
+		// library gets to keep making. A vendor retiring or rate-capping
+		// a model must be answerable with an environment variable, not a
+		// release. See pkg/settings: LLMPROVIDER_MISTRAL_MODEL.
+		model = settings.Model("mistral", MistralModel)
 	}
 
 	p := &MistralProvider{

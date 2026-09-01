@@ -15,6 +15,7 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
 
 const (
@@ -116,7 +117,11 @@ func NewNvidiaProviderWithRetry(apiKey, baseURL, model string, retryConfig Retry
 		baseURL = NvidiaAPIURL
 	}
 	if model == "" {
-		model = NvidiaModel
+		// The compiled constant is a FALLBACK, not a decision this
+		// library gets to keep making. A vendor retiring or rate-capping
+		// a model must be answerable with an environment variable, not a
+		// release. See pkg/settings: LLMPROVIDER_NVIDIA_MODEL.
+		model = settings.Model("nvidia", NvidiaModel)
 	}
 
 	p := &NvidiaProvider{

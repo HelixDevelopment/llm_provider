@@ -14,6 +14,7 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
 
 // RetryConfig defines retry behavior for API calls
@@ -183,12 +184,19 @@ func NewZAIProvider(apiKey, baseURL, model string) *ZAIProvider {
 }
 
 // NewZAIProviderWithRetry creates a new Z.AI provider instance with custom retry config
+// DefaultZAIModel is the model used when neither the caller nor the
+// environment names one. Previously an unnamed literal inside the
+// constructor, which made it invisible to anyone reading the package API.
+const DefaultZAIModel = "glm-4.5"
+
 func NewZAIProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *ZAIProvider {
 	if baseURL == "" {
 		baseURL = ZAIEndpointInternational
 	}
 	if model == "" {
-		model = "glm-4.5"
+		// FALLBACK, not a decision — see pkg/settings.
+		// LLMPROVIDER_ZAI_MODEL overrides it without a release.
+		model = settings.Model("zai", DefaultZAIModel)
 	}
 
 	p := &ZAIProvider{

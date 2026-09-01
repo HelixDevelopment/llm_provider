@@ -15,6 +15,7 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
 
 const (
@@ -137,7 +138,11 @@ func NewDeepSeekProviderWithRetry(apiKey, baseURL, model string, retryConfig Ret
 		baseURL = DeepSeekAPIURL
 	}
 	if model == "" {
-		model = DeepSeekModel
+		// The compiled constant is a FALLBACK, not a decision this
+		// library gets to keep making. A vendor retiring or rate-capping
+		// a model must be answerable with an environment variable, not a
+		// release. See pkg/settings: LLMPROVIDER_DEEPSEEK_MODEL.
+		model = settings.Model("deepseek", DeepSeekModel)
 	}
 
 	p := &DeepSeekProvider{

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
 
 // ZenHTTPProvider implements the LLMProvider interface using OpenCode's HTTP server
@@ -43,10 +44,28 @@ type ZenHTTPProvider struct {
 	autoStart     bool
 }
 
+// Defaults for the Zen HTTP provider. Each is a starting point that the
+// environment can override through pkg/settings — LLMPROVIDER_ZEN_BASE_URL,
+// LLMPROVIDER_ZEN_MODEL, LLMPROVIDER_ZEN_TIMEOUT — because an opencode server
+// on another host or port is an operator's routine change, not a fork of this
+// library. OPENCODE_BASE_URL is accepted as an alias for the endpoint, matching
+// the OPENCODE_SERVER_PASSWORD variable this file already reads two fields away.
+// DefaultZenModel is declared in zen.go (= ModelBigPickle) and is used here
+// as this provider's model fallback; it is not redeclared.
+const (
+	DefaultZenBaseURL   = "http://localhost:4096"
+	DefaultZenUsername  = "opencode"
+	DefaultZenTimeout   = 180 * time.Second
+	DefaultZenMaxTokens = 8192
+
+	// EnvZenBaseURLAlias is opencode's own endpoint variable.
+	EnvZenBaseURLAlias = "OPENCODE_BASE_URL"
+)
+
 // ZenHTTPConfig holds configuration for the HTTP provider
 type ZenHTTPConfig struct {
-	BaseURL   string // e.g., "http://localhost:4096"
-	Username  string // Default: "opencode"
+	BaseURL   string // e.g., DefaultZenBaseURL; see LLMPROVIDER_ZEN_BASE_URL
+	Username  string // Default: DefaultZenUsername
 	Password  string // From OPENCODE_SERVER_PASSWORD
 	Model     string
 	Timeout   time.Duration
@@ -58,12 +77,12 @@ type ZenHTTPConfig struct {
 func DefaultZenHTTPConfig() ZenHTTPConfig {
 	password := os.Getenv("OPENCODE_SERVER_PASSWORD")
 	return ZenHTTPConfig{
-		BaseURL:   "http://localhost:4096",
-		Username:  "opencode",
+		BaseURL:   settings.BaseURL("zen", DefaultZenBaseURL, EnvZenBaseURLAlias),
+		Username:  DefaultZenUsername,
 		Password:  password,
-		Model:     "big-pickle",
-		Timeout:   180 * time.Second,
-		MaxTokens: 8192,
+		Model:     settings.Model("zen", DefaultZenModel),
+		Timeout:   settings.Timeout("zen", DefaultZenTimeout),
+		MaxTokens: DefaultZenMaxTokens,
 		AutoStart: true,
 	}
 }
@@ -71,16 +90,19 @@ func DefaultZenHTTPConfig() ZenHTTPConfig {
 // NewZenHTTPProvider creates a new Zen HTTP provider
 func NewZenHTTPProvider(config ZenHTTPConfig) *ZenHTTPProvider {
 	if config.BaseURL == "" {
-		config.BaseURL = "http://localhost:4096"
+		config.BaseURL = settings.BaseURL("zen", DefaultZenBaseURL, EnvZenBaseURLAlias)
 	}
 	if config.Username == "" {
-		config.Username = "opencode"
+		config.Username = DefaultZenUsername
+	}
+	if config.Model == "" {
+		config.Model = settings.Model("zen", DefaultZenModel)
 	}
 	if config.Timeout == 0 {
-		config.Timeout = 180 * time.Second
+		config.Timeout = settings.Timeout("zen", DefaultZenTimeout)
 	}
 	if config.MaxTokens == 0 {
-		config.MaxTokens = 8192
+		config.MaxTokens = DefaultZenMaxTokens
 	}
 
 	return &ZenHTTPProvider{

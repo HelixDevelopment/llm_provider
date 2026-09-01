@@ -15,6 +15,7 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
 
 const (
@@ -116,7 +117,11 @@ func NewZhipuProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryC
 		baseURL = ZhipuAPIURL
 	}
 	if model == "" {
-		model = ZhipuModel
+		// The compiled constant is a FALLBACK, not a decision this
+		// library gets to keep making. A vendor retiring or rate-capping
+		// a model must be answerable with an environment variable, not a
+		// release. See pkg/settings: LLMPROVIDER_ZHIPU_MODEL.
+		model = settings.Model("zhipu", ZhipuModel)
 	}
 
 	p := &ZhipuProvider{
