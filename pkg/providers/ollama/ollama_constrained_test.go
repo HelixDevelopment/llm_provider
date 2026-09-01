@@ -12,7 +12,17 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"digital.vasic.llmprovider/pkg/models"
-	"digital.vasic.llmprovider/pkg/settings"
+)
+
+// The variables an operator actually exports, written out in full rather than
+// recomputed with settings.Key(): a test that derives the key from the same
+// helper its subject uses agrees with that subject by construction and stays
+// green even when the key is wrong. The convention is pinned independently by
+// pkg/settings/keys_contract_test.go.
+const (
+	envBaseURLKey = "LLMPROVIDER_OLLAMA_BASE_URL"
+	envModelKey   = "LLMPROVIDER_OLLAMA_MODEL"
+	envTimeoutKey = "LLMPROVIDER_OLLAMA_TIMEOUT"
 )
 
 // These tests gate the constrained-decoding, seeding and timeout capabilities.
@@ -233,9 +243,9 @@ func TestSetTimeout_ActuallyBoundsARequest(t *testing.T) {
 // condition defect the settings package exists to make visible.
 func clearCanonical(t *testing.T) {
 	t.Helper()
-	t.Setenv(settings.Key("ollama", settings.SuffixBaseURL), "")
-	t.Setenv(settings.Key("ollama", settings.SuffixModel), "")
-	t.Setenv(settings.Key("ollama", settings.SuffixTimeout), "")
+	t.Setenv(envBaseURLKey, "")
+	t.Setenv(envModelKey, "")
+	t.Setenv(envTimeoutKey, "")
 }
 
 func TestConstructorReadsEnvironment(t *testing.T) {

@@ -4,9 +4,17 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-
-	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// The variable an operator actually exports, written out in full rather than
+// recomputed with settings.Key(). Deriving the key from the same helper the
+// constructor uses would make this test agree with the subject by construction:
+// a Key() that silently changed convention would move BOTH sides together and
+// these assertions would keep passing while every operator's exported variable
+// stopped being read. Spelling it out is what lets this test come back RED for
+// that defect instead of quietly green. The convention itself is pinned
+// independently by pkg/settings/keys_contract_test.go.
+const envModelKey = "LLMPROVIDER_MODAL_MODEL"
 
 // The F23 gate for this adapter: the compiled default model must be a FALLBACK,
 // not a frozen decision. Before pkg/settings existed, `if model == "" { model =
@@ -17,7 +25,7 @@ import (
 // break every caller relying on the documented default, so the first half
 // pins the fallback; the second proves the override reaches the constructor.
 func TestDefaultModelIsOverridableFromTheEnvironment(t *testing.T) {
-	key := settings.Key("modal", settings.SuffixModel)
+	key := envModelKey
 
 	t.Setenv(key, "")
 	assert.Equal(t, ModalModel, NewModalProvider("k", "kid", "", "").model,
@@ -29,7 +37,7 @@ func TestDefaultModelIsOverridableFromTheEnvironment(t *testing.T) {
 }
 
 func TestExplicitModelOutranksTheEnvironment(t *testing.T) {
-	t.Setenv(settings.Key("modal", settings.SuffixModel), "from-env")
+	t.Setenv(envModelKey, "from-env")
 	assert.Equal(t, "caller-model", NewModalProvider("k", "kid", "", "caller-model").model,
 		"an explicit argument must outrank the environment")
 }

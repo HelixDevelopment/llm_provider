@@ -50,6 +50,15 @@ const (
 // not the same wait. Override with LLMPROVIDER_ZEN_API_TIMEOUT.
 const DefaultZenAPITimeout = 120 * time.Second
 
+// SettingsProviderModels keys the model-discovery probe:
+// LLMPROVIDER_ZEN_MODELS_TIMEOUT.
+const SettingsProviderModels = "zen_models"
+
+// DefaultZenModelsTimeout is the compiled fallback for that probe. It is
+// deliberately far shorter than either completion timeout: listing models is
+// a cheap GET, and a slow one should fail fast rather than stall a caller.
+const DefaultZenModelsTimeout = 10 * time.Second
+
 var log = logrus.New()
 
 const (
@@ -202,7 +211,10 @@ func discoverModelsFromAPI() []string {
 	req.Header.Set(AnonymousDeviceHeader, generateDeviceID())
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	// A short probe, not a completion: LLMPROVIDER_ZEN_MODELS_TIMEOUT keys it
+	// apart from the completion timeouts so shortening a discovery probe does
+	// not shorten a generation, and vice versa.
+	client := &http.Client{Timeout: settings.Timeout(SettingsProviderModels, DefaultZenModelsTimeout)}
 	resp, err := client.Do(req)
 	if err != nil {
 		log.WithError(err).Debug("Failed to fetch models from Zen API")

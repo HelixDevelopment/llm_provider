@@ -89,6 +89,10 @@ type CloudflareStreamResponse struct {
 	Done     bool   `json:"done"`
 }
 
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP client.
+// Override with LLMPROVIDER_CLOUDFLARE_TIMEOUT (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
+
 func DefaultRetryConfig() RetryConfig {
 	return RetryConfig{
 		MaxRetries:   3,
@@ -115,11 +119,12 @@ func NewCloudflareProviderWithRetry(apiKey, accountID, baseURL, model string, re
 	}
 
 	p := &CloudflareProvider{
-		apiKey:      apiKey,
-		accountID:   accountID,
-		baseURL:     baseURL,
-		model:       model,
-		httpClient:  &http.Client{Timeout: 120 * time.Second},
+		apiKey:    apiKey,
+		accountID: accountID,
+		baseURL:   baseURL,
+		model:     model,
+		// LLMPROVIDER_CLOUDFLARE_TIMEOUT.
+		httpClient:  &http.Client{Timeout: settings.Timeout("cloudflare", DefaultHTTPTimeout)},
 		retryConfig: retryConfig,
 	}
 

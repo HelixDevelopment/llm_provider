@@ -180,7 +180,10 @@ func modelsFixture(t *testing.T, ids ...string) *httptest.Server {
 // hardcoded fallback), so the old assertion required a CORRECT implementation
 // to fail.
 func TestGetCapabilities(t *testing.T) {
-	srv := modelsFixture(t, "sarvam-m", "sarvam-2b", "sarvam-text-embedding")
+	// SYNTHETIC fixture ids -- see the note in novita_test.go. The chat filter
+	// in pkg/discovery rejects any id containing "embedding"; that is the only
+	// property of these strings this test depends on.
+	srv := modelsFixture(t, "synthetic-chat-a", "synthetic-chat-b", "synthetic-text-embedding")
 	provider := NewSarvamProvider("test-key", srv.URL+"/v1/chat/completions", "")
 
 	caps := provider.GetCapabilities()
@@ -188,10 +191,10 @@ func TestGetCapabilities(t *testing.T) {
 	assert.NotNil(t, caps)
 	// Discovery reached the fixture and its result was plumbed into the
 	// capabilities — the behaviour the old assertion was reaching for.
-	assert.Contains(t, caps.SupportedModels, "sarvam-m")
-	assert.Contains(t, caps.SupportedModels, "sarvam-2b")
+	assert.Contains(t, caps.SupportedModels, "synthetic-chat-a")
+	assert.Contains(t, caps.SupportedModels, "synthetic-chat-b")
 	// And the chat-model filter still applies to whatever the endpoint returns.
-	assert.NotContains(t, caps.SupportedModels, "sarvam-text-embedding")
+	assert.NotContains(t, caps.SupportedModels, "synthetic-text-embedding")
 
 	// The static half of the capability record, which was always deterministic
 	// and never needed a network at all.

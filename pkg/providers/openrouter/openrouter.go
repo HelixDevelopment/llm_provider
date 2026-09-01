@@ -15,7 +15,13 @@ import (
 
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_OPENROUTER_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 60 * time.Second
 
 const (
 	defaultBaseURL = "https://openrouter.ai/api/v1"
@@ -119,7 +125,9 @@ func NewSimpleOpenRouterProviderWithBaseURL(apiKey, baseURL string) *SimpleOpenR
 // NewSimpleOpenRouterProviderWithRetry creates a new OpenRouter provider with custom retry config
 func NewSimpleOpenRouterProviderWithRetry(apiKey, baseURL string, retryConfig RetryConfig) *SimpleOpenRouterProvider {
 	if baseURL == "" {
-		baseURL = defaultBaseURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_OPENROUTER_BASE_URL.
+		baseURL = settings.BaseURL("openrouter", defaultBaseURL)
 	}
 	appTitle := resolveAppTitle("")
 	httpReferer := resolveHTTPReferer("")
@@ -127,7 +135,7 @@ func NewSimpleOpenRouterProviderWithRetry(apiKey, baseURL string, retryConfig Re
 		apiKey:  apiKey,
 		baseURL: baseURL,
 		client: &http.Client{
-			Timeout: 60 * time.Second,
+			Timeout: settings.Timeout("openrouter", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 		appTitle:    appTitle,

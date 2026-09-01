@@ -16,8 +16,14 @@ import (
 
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
+	"digital.vasic.llmprovider/pkg/settings"
 	"github.com/sirupsen/logrus"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_PUBLICAI_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
 
 var log = logrus.New()
 
@@ -119,10 +125,13 @@ func NewPublicAIProvider(apiKey, baseURL, model string) *PublicAIProvider {
 
 func NewPublicAIProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *PublicAIProvider {
 	if baseURL == "" {
-		baseURL = PublicAIAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_PUBLICAI_BASE_URL.
+		baseURL = settings.BaseURL("publicai", PublicAIAPIURL)
 	}
 	if model == "" {
-		model = PublicAIModel
+		// LLMPROVIDER_PUBLICAI_MODEL overrides this compiled fallback.
+		model = settings.Model("publicai", PublicAIModel)
 	}
 
 	p := &PublicAIProvider{
@@ -130,7 +139,7 @@ func NewPublicAIProviderWithRetry(apiKey, baseURL, model string, retryConfig Ret
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("publicai", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}

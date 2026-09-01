@@ -15,7 +15,13 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_XAI_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
 
 const (
 	// XAIAPIBaseURL is the base URL for xAI API (US region)
@@ -172,16 +178,25 @@ func NewProviderWithRegion(apiKey, model, region string) *Provider {
 	if region == "eu-west-1" {
 		baseURL = XAIAPIEUBaseURL
 	}
-	return NewProviderWithRetry(apiKey, baseURL, model, region, DefaultRetryConfig())
+	// Resolve HERE, not in NewProviderWithRetry. The region dispatch above
+	// always produces a NON-EMPTY string, so handing it in positionally would
+	// bypass that constructor's own empty-check and freeze this path while
+	// every other construction path stayed overridable — the silent shape of
+	// this defect. LLMPROVIDER_XAI_BASE_URL therefore wins over the
+	// region-selected compiled fallback, which is the point of an override.
+	return NewProviderWithRetry(apiKey, settings.BaseURL("xai", baseURL), model, region, DefaultRetryConfig())
 }
 
 // NewProviderWithRetry creates a new xAI provider with custom retry config
 func NewProviderWithRetry(apiKey, baseURL, model, region string, retryConfig RetryConfig) *Provider {
 	if baseURL == "" {
-		baseURL = XAIAPIBaseURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_XAI_BASE_URL.
+		baseURL = settings.BaseURL("xai", XAIAPIBaseURL)
 	}
 	if model == "" {
-		model = DefaultModel
+		// LLMPROVIDER_XAI_MODEL overrides this compiled fallback.
+		model = settings.Model("xai", DefaultModel)
 	}
 	if region == "" {
 		region = "us-east-1"
@@ -193,7 +208,7 @@ func NewProviderWithRetry(apiKey, baseURL, model, region string, retryConfig Ret
 		model:   model,
 		region:  region,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("xai", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}

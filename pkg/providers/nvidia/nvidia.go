@@ -18,6 +18,11 @@ import (
 	"digital.vasic.llmprovider/pkg/settings"
 )
 
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_NVIDIA_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
+
 const (
 	NvidiaAPIURL     = "https://integrate.api.nvidia.com/v1/chat/completions"
 	NvidiaModel      = "meta/llama-3.1-8b-instruct"
@@ -114,7 +119,9 @@ func NewNvidiaProvider(apiKey, baseURL, model string) *NvidiaProvider {
 
 func NewNvidiaProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *NvidiaProvider {
 	if baseURL == "" {
-		baseURL = NvidiaAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_NVIDIA_BASE_URL.
+		baseURL = settings.BaseURL("nvidia", NvidiaAPIURL)
 	}
 	if model == "" {
 		// The compiled constant is a FALLBACK, not a decision this
@@ -129,7 +136,7 @@ func NewNvidiaProviderWithRetry(apiKey, baseURL, model string, retryConfig Retry
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("nvidia", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}

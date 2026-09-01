@@ -14,7 +14,13 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_REPLICATE_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 300 * time.Second
 
 const (
 	// ReplicateAPIURL is the base URL for Replicate API
@@ -113,10 +119,13 @@ func NewProvider(apiKey, baseURL, model string) *Provider {
 // NewProviderWithRetry creates a new Replicate provider with custom retry config
 func NewProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *Provider {
 	if baseURL == "" {
-		baseURL = ReplicateAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_REPLICATE_BASE_URL.
+		baseURL = settings.BaseURL("replicate", ReplicateAPIURL)
 	}
 	if model == "" {
-		model = DefaultModel
+		// LLMPROVIDER_REPLICATE_MODEL overrides this compiled fallback.
+		model = settings.Model("replicate", DefaultModel)
 	}
 
 	p := &Provider{
@@ -124,7 +133,7 @@ func NewProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 300 * time.Second, // Replicate can have cold starts
+			Timeout: settings.Timeout("replicate", DefaultHTTPTimeout), // Replicate can have cold starts
 		},
 		retryConfig: retryConfig,
 	}

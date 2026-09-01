@@ -7,7 +7,16 @@ import (
 	"math/rand"
 	"net/http"
 	"time"
+
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultClientTimeout is the compiled fallback for the http.Client this file
+// synthesises when the caller supplies none. It is the root package's twin of
+// pkg/retry.DefaultClientTimeout and shares its key, LLMPROVIDER_RETRY_TIMEOUT:
+// the two are the same knob, and giving them two names would let an operator
+// set one and be surprised by the other.
+const DefaultClientTimeout = 60 * time.Second
 
 // RetryConfig defines retry behavior for LLM API calls
 type RetryConfig struct {
@@ -195,8 +204,9 @@ type RetryableHTTPClient struct {
 // NewRetryableHTTPClient creates a new RetryableHTTPClient
 func NewRetryableHTTPClient(client *http.Client, config RetryConfig) *RetryableHTTPClient {
 	if client == nil {
+		// LLMPROVIDER_RETRY_TIMEOUT.
 		client = &http.Client{
-			Timeout: 60 * time.Second,
+			Timeout: settings.Timeout("retry", DefaultClientTimeout),
 		}
 	}
 	return &RetryableHTTPClient{

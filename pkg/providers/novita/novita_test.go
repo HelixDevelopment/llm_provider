@@ -180,10 +180,17 @@ func modelsFixture(t *testing.T, ids ...string) *httptest.Server {
 // hardcoded fallback), so the old assertion required a CORRECT implementation
 // to fail.
 func TestGetCapabilities(t *testing.T) {
+	// SYNTHETIC fixture ids. They were real vendor ids, which made this
+	// fixture a frozen environment assumption in its own right. Only one
+	// property is load-bearing and it is preserved: pkg/discovery's chat filter
+	// rejects any id containing "embedding". (Line 23 and the FallbackModels
+	// assertions below DO name real ids on purpose -- they pin this adapter's
+	// own compiled default and its last-resort catalogue, which are the
+	// subject, not a fixture.)
 	srv := modelsFixture(t,
-		"meta-llama/llama-3-8b-instruct",
-		"mistralai/mistral-7b-instruct",
-		"baai/bge-m3-embedding",
+		"vendor-a/synthetic-chat-a",
+		"vendor-b/synthetic-chat-b",
+		"vendor-c/synthetic-embedding",
 	)
 	provider := NewNovitaProvider("test-key", srv.URL+"/v3/openai/chat/completions", "")
 
@@ -192,10 +199,10 @@ func TestGetCapabilities(t *testing.T) {
 	assert.NotNil(t, caps)
 	// Discovery reached the fixture and its result was plumbed into the
 	// capabilities — the behaviour the old assertion was reaching for.
-	assert.Contains(t, caps.SupportedModels, "meta-llama/llama-3-8b-instruct")
-	assert.Contains(t, caps.SupportedModels, "mistralai/mistral-7b-instruct")
+	assert.Contains(t, caps.SupportedModels, "vendor-a/synthetic-chat-a")
+	assert.Contains(t, caps.SupportedModels, "vendor-b/synthetic-chat-b")
 	// And the chat-model filter still applies to whatever the endpoint returns.
-	assert.NotContains(t, caps.SupportedModels, "baai/bge-m3-embedding")
+	assert.NotContains(t, caps.SupportedModels, "vendor-c/synthetic-embedding")
 
 	// The static half of the capability record, which was always deterministic
 	// and never needed a network at all.

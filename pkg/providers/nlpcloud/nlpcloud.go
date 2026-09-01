@@ -18,6 +18,11 @@ import (
 	"digital.vasic.llmprovider/pkg/settings"
 )
 
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_NLPCLOUD_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
+
 // modelsURL derives the /models endpoint from the configured baseURL so
 // health checks honor operator overrides (proxies, mirrors, httptest in
 // unit tests) instead of always hitting the hardcoded production URL.
@@ -131,7 +136,9 @@ func NewNLPCloudProvider(apiKey, baseURL, model string) *NLPCloudProvider {
 
 func NewNLPCloudProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *NLPCloudProvider {
 	if baseURL == "" {
-		baseURL = NLPCloudAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_NLPCLOUD_BASE_URL.
+		baseURL = settings.BaseURL("nlpcloud", NLPCloudAPIURL)
 	}
 	if model == "" {
 		// The compiled constant is a FALLBACK, not a decision this
@@ -146,7 +153,7 @@ func NewNLPCloudProviderWithRetry(apiKey, baseURL, model string, retryConfig Ret
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("nlpcloud", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}

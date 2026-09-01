@@ -50,10 +50,21 @@ cd "$MODULE" || { echo "FATAL: cannot enter $MODULE" >&2; exit 2; }
 
 ANCHOR_LIB="$MODULE/scripts/lib/anchor.py"
 
-# The closed port every offline invocation proxies through. Port 9 (discard) is
-# conventionally not listening; the assertion that it is closed is made below
-# rather than assumed.
-readonly DEAD_PROXY="http://127.0.0.1:9"
+# The closed endpoint every offline invocation proxies through. Port 9 (discard)
+# is conventionally not listening, and that it is closed is ASSERTED below
+# rather than assumed. It is nonetheless a compiled default, so it takes an
+# override: a host that has something bound to the discard port, or that needs a
+# different loopback family, can name its own dead endpoint instead of being
+# told this proof cannot run here.
+#
+# The host and port are kept as separate variables because the closed-port
+# assertion below needs the two halves individually -- /dev/tcp cannot be handed
+# a URL. Deriving one from the other by string surgery would let the URL and the
+# probe drift apart, which would leave this proof asserting that one endpoint is
+# closed while proxying through another.
+readonly DEAD_PROXY_HOST="${OFFLINE_PROOF_DEAD_HOST:-127.0.0.1}"
+readonly DEAD_PROXY_PORT="${OFFLINE_PROOF_DEAD_PORT:-9}"
+readonly DEAD_PROXY="http://${DEAD_PROXY_HOST}:${DEAD_PROXY_PORT}"
 
 OK=0; PROBLEM=0; UNDET=0
 BACKUP_DIR=""
@@ -158,12 +169,12 @@ mutation_anchor() {
 
 // GetCachedModels returns the currently cached models without triggering discovery.' ;;
         probe-novita)  printf '%s' 'srv := modelsFixture(t,
-		"meta-llama/llama-3-8b-instruct",
-		"mistralai/mistral-7b-instruct",
-		"baai/bge-m3-embedding",
+		"vendor-a/synthetic-chat-a",
+		"vendor-b/synthetic-chat-b",
+		"vendor-c/synthetic-embedding",
 	)
 	provider := NewNovitaProvider("test-key", srv.URL+"/v3/openai/chat/completions", "")' ;;
-        probe-sarvam)  printf '%s' 'srv := modelsFixture(t, "sarvam-m", "sarvam-2b", "sarvam-text-embedding")
+        probe-sarvam)  printf '%s' 'srv := modelsFixture(t, "synthetic-chat-a", "synthetic-chat-b", "synthetic-text-embedding")
 	provider := NewSarvamProvider("test-key", srv.URL+"/v1/chat/completions", "")' ;;
     esac
 }
@@ -261,9 +272,11 @@ command -v python3  >/dev/null 2>&1 || { echo "UNDETERMINED: no python3" >&2; ex
 
 # The offline half of this proof is worthless if the "dead" proxy is actually
 # alive, so prove it is refused rather than trusting the port number.
-if (exec 3<>/dev/tcp/127.0.0.1/9) 2>/dev/null; then
-    echo "UNDETERMINED: something is LISTENING on 127.0.0.1:9, so the offline" >&2
-    echo "              half of this proof would not actually be offline." >&2
+if (exec 3<>"/dev/tcp/${DEAD_PROXY_HOST}/${DEAD_PROXY_PORT}") 2>/dev/null; then
+    echo "UNDETERMINED: something is LISTENING on ${DEAD_PROXY_HOST}:${DEAD_PROXY_PORT}," >&2
+    echo "              so the offline half of this proof would not actually be" >&2
+    echo "              offline. Name a genuinely closed endpoint with" >&2
+    echo "              OFFLINE_PROOF_DEAD_HOST / OFFLINE_PROOF_DEAD_PORT." >&2
     exit 2
 fi
 

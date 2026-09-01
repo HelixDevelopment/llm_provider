@@ -15,7 +15,13 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_GITHUBMODELS_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
 
 const (
 	// GitHubModelsAPIURL is the base URL for GitHub Models chat completions
@@ -166,10 +172,13 @@ func NewGitHubModelsProviderWithRetry(
 	retryConfig RetryConfig,
 ) *GitHubModelsProvider {
 	if baseURL == "" {
-		baseURL = GitHubModelsAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_GITHUBMODELS_BASE_URL.
+		baseURL = settings.BaseURL("githubmodels", GitHubModelsAPIURL)
 	}
 	if model == "" {
-		model = GitHubModelsDefault
+		// LLMPROVIDER_GITHUBMODELS_MODEL overrides this compiled fallback.
+		model = settings.Model("githubmodels", GitHubModelsDefault)
 	}
 
 	p := &GitHubModelsProvider{
@@ -177,7 +186,7 @@ func NewGitHubModelsProviderWithRetry(
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("githubmodels", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}

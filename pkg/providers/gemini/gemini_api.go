@@ -15,7 +15,14 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this transport's HTTP client.
+// It is deliberately NOT DefaultUnifiedTimeout (180s, declared in gemini.go):
+// a plain HTTPS round trip and a CLI/ACP sub-provider round trip are not the
+// same wait. Override with LLMPROVIDER_GEMINI_TIMEOUT.
+const DefaultHTTPTimeout = 120 * time.Second
 
 const (
 	// GeminiDefaultModel is the default model for the Gemini API provider.
@@ -108,10 +115,12 @@ func NewGeminiAPIProviderWithRetry(
 	retryConfig RetryConfig,
 ) *GeminiAPIProvider {
 	if baseURL == "" {
-		baseURL = GeminiAPIURL
+		// LLMPROVIDER_GEMINI_BASE_URL.
+		baseURL = settings.BaseURL(SettingsProvider, GeminiAPIURL)
 	}
 	if model == "" {
-		model = GeminiDefaultModel
+		// LLMPROVIDER_GEMINI_MODEL.
+		model = settings.Model(SettingsProvider, GeminiDefaultModel)
 	}
 
 	// Derive streaming URL from base URL
@@ -133,7 +142,8 @@ func NewGeminiAPIProviderWithRetry(
 		streamURL: streamURL,
 		model:     model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			// LLMPROVIDER_GEMINI_TIMEOUT.
+			Timeout: settings.Timeout(SettingsProvider, DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}
@@ -884,7 +894,9 @@ func (p *GeminiAPIProvider) HealthCheck() error {
 
 	healthURL := p.healthURL
 	if healthURL == "" {
-		healthURL = "https://generativelanguage.googleapis.com/v1beta/models"
+		// LLMPROVIDER_GEMINI_MODELS_BASE_URL — keyed apart from the
+		// generateContent endpoint; see SettingsProviderModels in gemini.go.
+		healthURL = settings.BaseURL(SettingsProviderModels, GeminiModelsURL)
 	}
 
 	req, err := http.NewRequestWithContext(

@@ -19,6 +19,11 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_MISTRAL_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
+
 var log = logrus.New()
 
 const (
@@ -146,7 +151,9 @@ func NewMistralProvider(apiKey, baseURL, model string) *MistralProvider {
 
 func NewMistralProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *MistralProvider {
 	if baseURL == "" {
-		baseURL = MistralAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_MISTRAL_BASE_URL.
+		baseURL = settings.BaseURL("mistral", MistralAPIURL)
 	}
 	if model == "" {
 		// The compiled constant is a FALLBACK, not a decision this
@@ -161,7 +168,7 @@ func NewMistralProviderWithRetry(apiKey, baseURL, model string, retryConfig Retr
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("mistral", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}

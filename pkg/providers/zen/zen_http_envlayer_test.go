@@ -5,8 +5,17 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+)
 
-	"digital.vasic.llmprovider/pkg/settings"
+// The variables an operator actually exports for the LOCAL opencode transport,
+// written out in full rather than recomputed with settings.Key(): a test that
+// derives the key from the same helper its subject uses agrees with that
+// subject by construction and stays green even when the key is wrong.
+// envZenModelKey is declared in zen_envlayer_test.go and shared on purpose --
+// the model id genuinely is shared between the two transports.
+const (
+	envZenHTTPBaseURLKey = "LLMPROVIDER_ZEN_BASE_URL"
+	envZenHTTPTimeoutKey = "LLMPROVIDER_ZEN_TIMEOUT"
 )
 
 // The F24 gate for this adapter. `http://localhost:4096` was a frozen literal
@@ -18,9 +27,9 @@ import (
 
 func clearZenEnv(t *testing.T) {
 	t.Helper()
-	t.Setenv(settings.Key("zen", settings.SuffixBaseURL), "")
-	t.Setenv(settings.Key("zen", settings.SuffixModel), "")
-	t.Setenv(settings.Key("zen", settings.SuffixTimeout), "")
+	t.Setenv(envZenHTTPBaseURLKey, "")
+	t.Setenv(envZenModelKey, "")
+	t.Setenv(envZenHTTPTimeoutKey, "")
 	t.Setenv(EnvZenBaseURLAlias, "")
 }
 
@@ -36,7 +45,7 @@ func TestZenHTTPDefaultsWhenTheEnvironmentIsClear(t *testing.T) {
 
 func TestZenHTTPEndpointIsOverridable(t *testing.T) {
 	clearZenEnv(t)
-	t.Setenv(settings.Key("zen", settings.SuffixBaseURL), "http://inference.internal:4096")
+	t.Setenv(envZenHTTPBaseURLKey, "http://inference.internal:4096")
 	assert.Equal(t, "http://inference.internal:4096", DefaultZenHTTPConfig().BaseURL)
 }
 
@@ -46,14 +55,14 @@ func TestZenHTTPAcceptsOpencodesOwnEndpointVariable(t *testing.T) {
 	assert.Equal(t, "http://from-opencode:9999", DefaultZenHTTPConfig().BaseURL)
 
 	// …and this module's own convention outranks the alias when both are set.
-	t.Setenv(settings.Key("zen", settings.SuffixBaseURL), "http://canonical:1")
+	t.Setenv(envZenHTTPBaseURLKey, "http://canonical:1")
 	assert.Equal(t, "http://canonical:1", DefaultZenHTTPConfig().BaseURL)
 }
 
 func TestZenHTTPModelAndTimeoutAreOverridable(t *testing.T) {
 	clearZenEnv(t)
-	t.Setenv(settings.Key("zen", settings.SuffixModel), "operator-chosen-model")
-	t.Setenv(settings.Key("zen", settings.SuffixTimeout), "9m")
+	t.Setenv(envZenModelKey, "operator-chosen-model")
+	t.Setenv(envZenHTTPTimeoutKey, "9m")
 	cfg := DefaultZenHTTPConfig()
 	assert.Equal(t, "operator-chosen-model", cfg.Model)
 	assert.Equal(t, 9*time.Minute, cfg.Timeout)
@@ -65,9 +74,9 @@ func TestNewZenHTTPProviderFillsBlanksFromTheEnvironment(t *testing.T) {
 	// leaves fields zero must get the same environment layer — before this,
 	// that path re-froze the literals a second time.
 	clearZenEnv(t)
-	t.Setenv(settings.Key("zen", settings.SuffixBaseURL), "http://hand-built:4096")
-	t.Setenv(settings.Key("zen", settings.SuffixModel), "hand-built-model")
-	t.Setenv(settings.Key("zen", settings.SuffixTimeout), "42s")
+	t.Setenv(envZenHTTPBaseURLKey, "http://hand-built:4096")
+	t.Setenv(envZenModelKey, "hand-built-model")
+	t.Setenv(envZenHTTPTimeoutKey, "42s")
 
 	p := NewZenHTTPProvider(ZenHTTPConfig{})
 	assert.Equal(t, "http://hand-built:4096", p.baseURL)
@@ -76,7 +85,7 @@ func TestNewZenHTTPProviderFillsBlanksFromTheEnvironment(t *testing.T) {
 
 func TestZenHTTPExplicitConfigOutranksTheEnvironment(t *testing.T) {
 	clearZenEnv(t)
-	t.Setenv(settings.Key("zen", settings.SuffixBaseURL), "http://from-env:1")
+	t.Setenv(envZenHTTPBaseURLKey, "http://from-env:1")
 	p := NewZenHTTPProvider(ZenHTTPConfig{BaseURL: "http://explicit:2", Model: "m"})
 	assert.Equal(t, "http://explicit:2", p.baseURL)
 }

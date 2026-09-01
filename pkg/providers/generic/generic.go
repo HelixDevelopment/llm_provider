@@ -13,6 +13,7 @@ import (
 
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
 
 const (
@@ -104,7 +105,15 @@ func NewGenericProvider(name, apiKey, baseURL, model string) *Provider {
 		model:   model,
 		name:    name,
 		httpClient: &http.Client{
-			Timeout: DefaultTimeout,
+			// The settings key is the CALLER'S provider name, not "generic":
+			// this adapter is a shim in front of many backends, so a single
+			// LLMPROVIDER_GENERIC_TIMEOUT would tie every backend reached
+			// through it to one wait. `name` gives each its own —
+			// LLMPROVIDER_NVIDIA_TIMEOUT, LLMPROVIDER_SAMBANOVA_TIMEOUT, …
+			// baseURL and model are NOT resolved here on purpose: this
+			// constructor has no compiled default for either, so there is
+			// nothing to unfreeze — the caller supplies both.
+			Timeout: settings.Timeout(name, DefaultTimeout),
 		},
 	}
 }

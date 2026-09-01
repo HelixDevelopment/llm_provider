@@ -435,14 +435,30 @@ func TestSimpleOpenRouterProvider_HealthCheck(t *testing.T) {
 // documented contract — pkg/discovery returns nil when live discovery is
 // unreachable (CONST-036, no hardcoded fallback), so the old assertion
 // required a CORRECT implementation to fail.
+// SYNTHETIC fixture model ids. They were real vendor ids, which made this
+// fixture a frozen environment assumption in its own right — a test that names
+// a live vendor's catalogue carries the same defect as the code it tests, and
+// scripts/audit-environment-assumptions.sh reported exactly that.
+//
+// Two properties are load-bearing and both are preserved: the ids keep the
+// "<vendor>/<model>" shape OpenRouter uses, and the chat filter in
+// pkg/discovery rejects any id containing "embedding", so fixtureEmbedding must
+// contain that substring and the other five must not. Six in, five kept out of
+// the filter, one dropped — which is what `assert.Len(..., 5)` measures.
+const (
+	fixtureChatA     = "vendor-a/synthetic-chat-a"
+	fixtureChatE     = "vendor-e/synthetic-chat-e"
+	fixtureEmbedding = "vendor-f/synthetic-text-embedding"
+)
+
 func TestSimpleOpenRouterProvider_GetCapabilities(t *testing.T) {
 	srv := modelsFixture(t,
-		"anthropic/claude-3.5-sonnet",
-		"openai/gpt-4o",
-		"google/gemini-pro",
-		"meta-llama/llama-3.1-70b-instruct",
-		"deepseek/deepseek-chat",
-		"openai/text-embedding-3-large",
+		fixtureChatA,
+		"vendor-b/synthetic-chat-b",
+		"vendor-c/synthetic-chat-c",
+		"vendor-d/synthetic-chat-d",
+		fixtureChatE,
+		fixtureEmbedding,
 	)
 	provider := NewSimpleOpenRouterProviderWithBaseURL("test-api-key", srv.URL)
 	caps := provider.GetCapabilities()
@@ -450,11 +466,11 @@ func TestSimpleOpenRouterProvider_GetCapabilities(t *testing.T) {
 	assert.NotNil(t, caps)
 	// Discovery reached the fixture and its result was plumbed into the
 	// capabilities — the behaviour the old assertion was reaching for.
-	assert.Contains(t, caps.SupportedModels, "anthropic/claude-3.5-sonnet")
-	assert.Contains(t, caps.SupportedModels, "deepseek/deepseek-chat")
+	assert.Contains(t, caps.SupportedModels, fixtureChatA)
+	assert.Contains(t, caps.SupportedModels, fixtureChatE)
 	assert.Len(t, caps.SupportedModels, 5)
 	// And the chat-model filter still applies to whatever the endpoint returns.
-	assert.NotContains(t, caps.SupportedModels, "openai/text-embedding-3-large")
+	assert.NotContains(t, caps.SupportedModels, fixtureEmbedding)
 
 	assert.Contains(t, caps.SupportedFeatures, "text_completion")
 	assert.Contains(t, caps.SupportedFeatures, "chat")

@@ -9,7 +9,18 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultTimeout is the compiled fallback wait for this shared client.
+//
+// The settings key is the module-scoped "http" rather than a provider name,
+// because this constructor is handed a baseURL and no provider identity — there
+// is nothing here to key per backend. An adapter that wants a per-provider wait
+// resolves it itself and calls SetTimeout. Override with
+// LLMPROVIDER_HTTP_TIMEOUT.
+const DefaultTimeout = 30 * time.Second
 
 // Client represents an HTTP client with retry logic
 type Client struct {
@@ -22,14 +33,19 @@ type Client struct {
 
 // NewClient creates a new HTTP client
 func NewClient(baseURL, apiKey string) *Client {
+	// Resolved ONCE and used for both fields: reading the environment twice
+	// could hand the struct two different waits if the variable changed
+	// between the reads, and a client whose httpClient.Timeout disagrees with
+	// its own timeout field is a bug nobody would find by reading either line.
+	timeout := settings.Timeout("http", DefaultTimeout)
 	return &Client{
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: timeout,
 		},
 		baseURL:    baseURL,
 		apiKey:     apiKey,
 		retryCount: 3,
-		timeout:    30 * time.Second,
+		timeout:    timeout,
 	}
 }
 

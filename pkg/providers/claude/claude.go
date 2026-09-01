@@ -15,7 +15,29 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// Settings keys for this adapter. The two AUTH paths get two MODEL keys and
+// share one BASE_URL key, because that is what the code actually does: both
+// transports post to ClaudeAPIURL, but an OAuth token from the Claude Code CLI
+// is product-restricted and an operator may well want a different model on that
+// path than on the API-key path. One shared MODEL key would make choosing a
+// model for one transport silently change the other.
+const (
+	// SettingsProvider keys the shared endpoint and timeout:
+	// LLMPROVIDER_CLAUDE_BASE_URL and LLMPROVIDER_CLAUDE_TIMEOUT, and the
+	// API-key path's model: LLMPROVIDER_CLAUDE_MODEL.
+	SettingsProvider = "claude"
+	// SettingsProviderOAuth keys the OAuth path's model:
+	// LLMPROVIDER_CLAUDE_OAUTH_MODEL.
+	SettingsProviderOAuth = "claude_oauth"
+)
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP client.
+// It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_CLAUDE_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 60 * time.Second
 
 const (
 	ClaudeAPIURL     = "https://api.anthropic.com/v1/messages"
@@ -146,10 +168,12 @@ func NewClaudeProvider(apiKey, baseURL, model string) *ClaudeProvider {
 
 func NewClaudeProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *ClaudeProvider {
 	if baseURL == "" {
-		baseURL = ClaudeAPIURL
+		// LLMPROVIDER_CLAUDE_BASE_URL.
+		baseURL = settings.BaseURL(SettingsProvider, ClaudeAPIURL)
 	}
 	if model == "" {
-		model = ClaudeModel
+		// LLMPROVIDER_CLAUDE_MODEL.
+		model = settings.Model(SettingsProvider, ClaudeModel)
 	}
 
 	p := &ClaudeProvider{
@@ -157,7 +181,8 @@ func NewClaudeProviderWithRetry(apiKey, baseURL, model string, retryConfig Retry
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 60 * time.Second,
+			// LLMPROVIDER_CLAUDE_TIMEOUT.
+			Timeout: settings.Timeout(SettingsProvider, DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 		authType:    AuthTypeAPIKey,
@@ -213,10 +238,13 @@ func NewClaudeProviderWithOAuth(baseURL, model string, credReader OAuthCredentia
 // NewClaudeProviderWithOAuthAndRetry creates a new Claude provider using OAuth credentials with custom retry config
 func NewClaudeProviderWithOAuthAndRetry(baseURL, model string, retryConfig RetryConfig, credReader OAuthCredentialReader) (*ClaudeProvider, error) {
 	if baseURL == "" {
-		baseURL = ClaudeAPIURL
+		// LLMPROVIDER_CLAUDE_BASE_URL — shared with the API-key path by design.
+		baseURL = settings.BaseURL(SettingsProvider, ClaudeAPIURL)
 	}
 	if model == "" {
-		model = ClaudeOAuthModel
+		// LLMPROVIDER_CLAUDE_OAUTH_MODEL — deliberately NOT the API-key path's
+		// key; see SettingsProviderOAuth.
+		model = settings.Model(SettingsProviderOAuth, ClaudeOAuthModel)
 	}
 
 	if credReader == nil || !credReader.HasValidClaudeCredentials() {
@@ -228,7 +256,8 @@ func NewClaudeProviderWithOAuthAndRetry(baseURL, model string, retryConfig Retry
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 60 * time.Second,
+			// LLMPROVIDER_CLAUDE_TIMEOUT.
+			Timeout: settings.Timeout(SettingsProvider, DefaultHTTPTimeout),
 		},
 		retryConfig:     retryConfig,
 		authType:        AuthTypeOAuth,

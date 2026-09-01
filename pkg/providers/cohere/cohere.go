@@ -15,7 +15,13 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_COHERE_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
 
 const (
 	// CohereAPIURL is the base URL for Cohere API
@@ -214,10 +220,13 @@ func NewProvider(apiKey, baseURL, model string) *Provider {
 // NewProviderWithRetry creates a new Cohere provider with custom retry config
 func NewProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *Provider {
 	if baseURL == "" {
-		baseURL = CohereAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_COHERE_BASE_URL.
+		baseURL = settings.BaseURL("cohere", CohereAPIURL)
 	}
 	if model == "" {
-		model = DefaultModel
+		// LLMPROVIDER_COHERE_MODEL overrides this compiled fallback.
+		model = settings.Model("cohere", DefaultModel)
 	}
 
 	p := &Provider{
@@ -225,7 +234,7 @@ func NewProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("cohere", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}

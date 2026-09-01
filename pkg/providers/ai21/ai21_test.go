@@ -287,8 +287,24 @@ func modelsFixture(t *testing.T, ids ...string) *httptest.Server {
 // OPPOSITE of the documented contract: pkg/discovery returns nil when live
 // discovery is unreachable (CONST-036, no hardcoded fallback), so the old
 // assertion required a correct implementation to fail.
+// SYNTHETIC fixture model ids. They were real vendor ids ("jamba-1.5-large",
+// "text-embedding-ada-002"), which made this fixture a frozen environment
+// assumption in its own right: a test that names a live vendor's catalogue has
+// the same defect as the code it tests, one layer out, and it went on to be
+// reported by scripts/audit-environment-assumptions.sh.
+//
+// Only ONE property of these strings is load-bearing, and it is preserved: the
+// chat filter in pkg/discovery rejects any id containing "embedding", so
+// fixtureEmbedding must contain that substring and the other two must not.
+// Nothing else about the real ids mattered to this test.
+const (
+	fixtureChatA     = "synthetic-chat-a"
+	fixtureChatB     = "synthetic-chat-b"
+	fixtureEmbedding = "synthetic-text-embedding-a"
+)
+
 func TestGetCapabilities(t *testing.T) {
-	srv := modelsFixture(t, "jamba-1.5-large", "jamba-1.5-mini", "text-embedding-ada-002")
+	srv := modelsFixture(t, fixtureChatA, fixtureChatB, fixtureEmbedding)
 	provider := NewProvider("test-api-key", srv.URL+"/studio/v1/chat/completions", "")
 
 	caps := provider.GetCapabilities()
@@ -296,10 +312,10 @@ func TestGetCapabilities(t *testing.T) {
 	require.NotNil(t, caps)
 	// Discovery reached the fixture and its result was plumbed into the
 	// capabilities — the behaviour the old assertion was reaching for.
-	assert.Contains(t, caps.SupportedModels, "jamba-1.5-large")
-	assert.Contains(t, caps.SupportedModels, "jamba-1.5-mini")
+	assert.Contains(t, caps.SupportedModels, fixtureChatA)
+	assert.Contains(t, caps.SupportedModels, fixtureChatB)
 	// And the chat-model filter still applies to whatever the endpoint returns.
-	assert.NotContains(t, caps.SupportedModels, "text-embedding-ada-002")
+	assert.NotContains(t, caps.SupportedModels, fixtureEmbedding)
 
 	// The static half of the capability record, which was always deterministic
 	// and never needed a network at all.
@@ -362,12 +378,12 @@ func TestModelsURLMatchesConstant(t *testing.T) {
 //	AI21_LIVE_DISCOVERY_TEST=1 AI21_API_KEY=<real key> go test ./pkg/providers/ai21/
 func TestGetCapabilitiesLiveDiscovery(t *testing.T) {
 	if os.Getenv("AI21_LIVE_DISCOVERY_TEST") == "" {
-		t.Skip("live discovery probe is opt-in: set AI21_LIVE_DISCOVERY_TEST=1 " +
+		t.Skip("live discovery probe is opt-in: set AI21_LIVE_DISCOVERY_TEST=1 " + // SKIP-OK: #opt-in-live-probe
 			"together with a real AI21_API_KEY to run it")
 	}
 	apiKey := os.Getenv("AI21_API_KEY")
 	if apiKey == "" {
-		t.Skip("AI21_LIVE_DISCOVERY_TEST is set but AI21_API_KEY is empty; a live " +
+		t.Skip("AI21_LIVE_DISCOVERY_TEST is set but AI21_API_KEY is empty; a live " + // SKIP-OK: #opt-in-live-probe
 			"probe without a credential would measure the credential, not the adapter")
 	}
 

@@ -107,6 +107,10 @@ type ModalErrorResponse struct {
 	} `json:"error"`
 }
 
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP client.
+// Override with LLMPROVIDER_MODAL_TIMEOUT (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
+
 func DefaultRetryConfig() RetryConfig {
 	return RetryConfig{
 		MaxRetries:   3,
@@ -122,7 +126,9 @@ func NewModalProvider(apiKey, apiKeyID, baseURL, model string) *ModalProvider {
 
 func NewModalProviderWithRetry(apiKey, apiKeyID, baseURL, model string, retryConfig RetryConfig) *ModalProvider {
 	if baseURL == "" {
-		baseURL = ModalAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_MODAL_BASE_URL.
+		baseURL = settings.BaseURL("modal", ModalAPIURL)
 	}
 	if model == "" {
 		// The compiled constant is a FALLBACK, not a decision this
@@ -133,11 +139,12 @@ func NewModalProviderWithRetry(apiKey, apiKeyID, baseURL, model string, retryCon
 	}
 
 	p := &ModalProvider{
-		apiKey:      apiKey,
-		apiKeyID:    apiKeyID,
-		baseURL:     baseURL,
-		model:       model,
-		httpClient:  &http.Client{Timeout: 120 * time.Second},
+		apiKey:   apiKey,
+		apiKeyID: apiKeyID,
+		baseURL:  baseURL,
+		model:    model,
+		// LLMPROVIDER_MODAL_TIMEOUT.
+		httpClient:  &http.Client{Timeout: settings.Timeout("modal", DefaultHTTPTimeout)},
 		retryConfig: retryConfig,
 	}
 

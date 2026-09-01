@@ -20,6 +20,11 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_CEREBRAS_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
+
 var log = logrus.New()
 
 const (
@@ -117,7 +122,9 @@ func NewCerebrasProvider(apiKey, baseURL, model string) *CerebrasProvider {
 
 func NewCerebrasProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *CerebrasProvider {
 	if baseURL == "" {
-		baseURL = CerebrasAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_CEREBRAS_BASE_URL.
+		baseURL = settings.BaseURL("cerebras", CerebrasAPIURL)
 	}
 	if model == "" {
 		// The compiled constant is a FALLBACK, not a decision this
@@ -132,7 +139,7 @@ func NewCerebrasProviderWithRetry(apiKey, baseURL, model string, retryConfig Ret
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("cerebras", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}

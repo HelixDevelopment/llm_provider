@@ -18,6 +18,11 @@ import (
 	"digital.vasic.llmprovider/pkg/settings"
 )
 
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_CODESTRAL_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
+
 // modelsURL derives the /models endpoint from the configured baseURL so
 // health checks honor operator overrides (proxies, mirrors, httptest in
 // unit tests) instead of always hitting the hardcoded production URL.
@@ -121,7 +126,9 @@ func NewCodestralProvider(apiKey, baseURL, model string) *CodestralProvider {
 
 func NewCodestralProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *CodestralProvider {
 	if baseURL == "" {
-		baseURL = CodestralAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_CODESTRAL_BASE_URL.
+		baseURL = settings.BaseURL("codestral", CodestralAPIURL)
 	}
 	if model == "" {
 		// The compiled constant is a FALLBACK, not a decision this
@@ -136,7 +143,7 @@ func NewCodestralProviderWithRetry(apiKey, baseURL, model string, retryConfig Re
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("codestral", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}

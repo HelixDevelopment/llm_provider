@@ -9,7 +9,17 @@ import (
 
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultJunieModel is the compiled fallback model. Override with
+// LLMPROVIDER_JUNIE_MODEL (see pkg/settings).
+const DefaultJunieModel = "sonnet"
+
+// DefaultJunieTimeout is the compiled fallback wait. Junie drives a headless
+// CLI or an ACP session rather than a single HTTPS round trip, which is why it
+// is longer than a plain adapter's. Override with LLMPROVIDER_JUNIE_TIMEOUT.
+const DefaultJunieTimeout = 180 * time.Second
 
 // JunieProvider is the unified Junie provider with multiple access methods:
 // 1. Primary: Headless CLI mode with Junie API key
@@ -47,8 +57,9 @@ type JunieConfig struct {
 // DefaultJunieConfig returns default configuration
 func DefaultJunieConfig() JunieConfig {
 	return JunieConfig{
-		Model:           "sonnet",
-		Timeout:         180 * time.Second,
+		// LLMPROVIDER_JUNIE_MODEL / LLMPROVIDER_JUNIE_TIMEOUT.
+		Model:           settings.Model("junie", DefaultJunieModel),
+		Timeout:         settings.Timeout("junie", DefaultJunieTimeout),
 		MaxTokens:       8192,
 		APIKey:          os.Getenv("JUNIE_API_KEY"),
 		PreferredMethod: "auto",
@@ -58,7 +69,18 @@ func DefaultJunieConfig() JunieConfig {
 // NewJunieProvider creates a new unified Junie provider
 func NewJunieProvider(config JunieConfig) *JunieProvider {
 	if config.Timeout == 0 {
-		config.Timeout = 180 * time.Second
+		// LLMPROVIDER_JUNIE_TIMEOUT. This check is reached by any caller that
+		// builds a JunieConfig itself rather than starting from
+		// DefaultJunieConfig, so it must resolve too — resolving in only one
+		// of the two places is how an override comes to work on some
+		// construction paths and not others.
+		config.Timeout = settings.Timeout("junie", DefaultJunieTimeout)
+	}
+	if config.Model == "" {
+		// LLMPROVIDER_JUNIE_MODEL. There was no empty-check here at all: a
+		// caller-built config with no Model produced a provider with an EMPTY
+		// model string, which is a worse failure than a frozen one.
+		config.Model = settings.Model("junie", DefaultJunieModel)
 	}
 	if config.MaxTokens == 0 {
 		config.MaxTokens = 8192

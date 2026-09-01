@@ -18,6 +18,11 @@ import (
 	"digital.vasic.llmprovider/pkg/settings"
 )
 
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_NOVITA_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
+
 const (
 	NovitaAPIURL     = "https://api.novita.ai/v3/openai/chat/completions"
 	NovitaModel      = "meta-llama/llama-3-8b-instruct"
@@ -114,7 +119,9 @@ func NewNovitaProvider(apiKey, baseURL, model string) *NovitaProvider {
 
 func NewNovitaProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *NovitaProvider {
 	if baseURL == "" {
-		baseURL = NovitaAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_NOVITA_BASE_URL.
+		baseURL = settings.BaseURL("novita", NovitaAPIURL)
 	}
 	if model == "" {
 		// The compiled constant is a FALLBACK, not a decision this
@@ -129,7 +136,7 @@ func NewNovitaProviderWithRetry(apiKey, baseURL, model string, retryConfig Retry
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("novita", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}
