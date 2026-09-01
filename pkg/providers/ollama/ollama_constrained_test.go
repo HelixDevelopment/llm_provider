@@ -165,16 +165,28 @@ func TestComplete_NumPredictOverridesMaxTokens(t *testing.T) {
 func TestComplete_PerRequestModelOverridesProviderModel(t *testing.T) {
 	p, body := capture(t, OllamaResponse{Model: "other", Response: "hi", Done: true})
 	r := req(nil)
-	r.ModelParams.Model = "qwen3:8b"
+	// A synthetic id, not a real one: what is under test is that the
+	// per-request field reaches the wire, and naming a real model here would
+	// freeze a model choice into a backend-agnostic adapter without adding a
+	// single assertion. Matches the "explicit-model" fixture below.
+	r.ModelParams.Model = "per-request-model"
 	_, err := p.Complete(context.Background(), r)
 	require.NoError(t, err)
-	assert.Equal(t, "qwen3:8b", (*body)["model"])
+	assert.Equal(t, "per-request-model", (*body)["model"])
 }
 
 // --- timeout --------------------------------------------------------------
 
+// Neither of the two tests below issues a request: they read back the timeout
+// field only. The base URL is therefore inert, and it is spelled with an
+// RFC 2606 .invalid host rather than a loopback address and port so that it
+// cannot be mistaken for a service this adapter expects to find running, and
+// so that a future edit which DOES make a request here fails loudly instead of
+// reaching whatever happens to be listening on the developer's machine.
+const unusedBaseURL = "http://fixture.invalid"
+
 func TestSetTimeout(t *testing.T) {
-	p := NewOllamaProvider("http://127.0.0.1:1", "llama2")
+	p := NewOllamaProvider(unusedBaseURL, "llama2")
 	assert.Equal(t, DefaultTimeout, p.Timeout(), "constructor default")
 
 	p.SetTimeout(300 * time.Second)
@@ -184,7 +196,7 @@ func TestSetTimeout(t *testing.T) {
 func TestSetTimeout_RejectsNonPositive(t *testing.T) {
 	// http.Client.Timeout == 0 means "wait forever", so a mistaken
 	// SetTimeout(0) must not turn a bounded request into a hung one.
-	p := NewOllamaProvider("http://127.0.0.1:1", "llama2")
+	p := NewOllamaProvider(unusedBaseURL, "llama2")
 	p.SetTimeout(45 * time.Second)
 	p.SetTimeout(0)
 	assert.Equal(t, 45*time.Second, p.Timeout())
@@ -229,19 +241,19 @@ func clearCanonical(t *testing.T) {
 func TestConstructorReadsEnvironment(t *testing.T) {
 	clearCanonical(t)
 	t.Setenv(EnvBaseURL, "http://ollama.internal:9999")
-	t.Setenv(EnvModel, "qwen3:8b")
+	t.Setenv(EnvModel, "env-chosen-model")
 	t.Setenv(EnvTimeout, "7m")
 
 	p := NewOllamaProvider("", "")
 	assert.Equal(t, "http://ollama.internal:9999", p.baseURL)
-	assert.Equal(t, "qwen3:8b", p.model)
+	assert.Equal(t, "env-chosen-model", p.model)
 	assert.Equal(t, 7*time.Minute, p.Timeout())
 }
 
 func TestExplicitArgumentsBeatTheEnvironment(t *testing.T) {
 	clearCanonical(t)
 	t.Setenv(EnvBaseURL, "http://ollama.internal:9999")
-	t.Setenv(EnvModel, "qwen3:8b")
+	t.Setenv(EnvModel, "env-chosen-model")
 
 	p := NewOllamaProvider("http://explicit:1234", "explicit-model")
 	assert.Equal(t, "http://explicit:1234", p.baseURL)

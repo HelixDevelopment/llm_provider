@@ -14,9 +14,18 @@ func TestKeyConvention(t *testing.T) {
 	assert.Equal(t, "LLMPROVIDER_AI21_MODEL", Key("ai21", SuffixModel))
 }
 
+// The fixtures below are deliberately SYNTHETIC ("compiled-fallback", not
+// "llama3.1-8b"; "http://compiled-fallback", not "http://localhost:11434").
+// This package resolves a precedence chain and knows nothing about any
+// particular vendor or any particular host — a real model id or a real
+// loopback default here would freeze into a provider-agnostic package exactly
+// the environment assumption the package exists to unfreeze, and it reads as
+// permission to add the next one. It also sharpens the failure message: if
+// precedence ever broke, "compiled-fallback" names the wrong answer
+// unambiguously, where a plausible-looking real value would not.
 func TestFallbackWhenNothingIsSet(t *testing.T) {
 	t.Setenv(Key("cerebras", SuffixModel), "")
-	assert.Equal(t, "llama3.1-8b", Model("cerebras", "llama3.1-8b"))
+	assert.Equal(t, "compiled-fallback", Model("cerebras", "compiled-fallback"))
 }
 
 func TestCanonicalKeyWins(t *testing.T) {
@@ -28,18 +37,18 @@ func TestAliasIsConsultedAfterTheCanonicalKey(t *testing.T) {
 	t.Setenv(Key("ollama", SuffixBaseURL), "")
 	t.Setenv("OLLAMA_HOST", "http://from-alias:11434")
 	assert.Equal(t, "http://from-alias:11434",
-		BaseURL("ollama", "http://localhost:11434", "OLLAMA_HOST"))
+		BaseURL("ollama", "http://compiled-fallback", "OLLAMA_HOST"))
 
 	// And the module's own convention outranks the alias when both are set.
 	t.Setenv(Key("ollama", SuffixBaseURL), "http://from-canonical:1234")
 	assert.Equal(t, "http://from-canonical:1234",
-		BaseURL("ollama", "http://localhost:11434", "OLLAMA_HOST"))
+		BaseURL("ollama", "http://compiled-fallback", "OLLAMA_HOST"))
 }
 
 func TestEmptyCountsAsUnset(t *testing.T) {
 	// This is what makes a test hermetic without unsetting process env vars.
 	t.Setenv(Key("mistral", SuffixModel), "")
-	assert.Equal(t, "mistral-large-latest", Model("mistral", "mistral-large-latest"))
+	assert.Equal(t, "compiled-fallback", Model("mistral", "compiled-fallback"))
 }
 
 func TestTimeoutParsing(t *testing.T) {
