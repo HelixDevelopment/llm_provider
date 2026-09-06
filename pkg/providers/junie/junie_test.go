@@ -196,16 +196,62 @@ func TestJunieProvider_GetCapabilities(t *testing.T) {
 func TestJunieProvider_ValidateConfig(t *testing.T) {
 	p := junie.NewJunieProvider(junie.DefaultJunieConfig())
 	valid, issues := p.ValidateConfig(nil)
-	if junie.IsJunieInstalled() && (os.Getenv("JUNIE_API_KEY") != "" || junie.IsJunieAuthenticated()) {
+
+	installed := junie.IsJunieInstalled()
+	credentialed := os.Getenv("JUNIE_API_KEY") != "" || junie.IsJunieAuthenticated()
+
+	if installed && credentialed {
+		// This branch used to contain nothing but a t.Logf, so on a machine
+		// where Junie IS installed and credentialed the test asserted nothing
+		// whatsoever. ValidateConfig appends an issue only when the CLI is
+		// missing or no credential can be found, so with both present its
+		// contract is an unconditional valid=true with no issues.
 		if !valid {
-			t.Logf("ValidateConfig returned valid=false, issues: %v", issues)
+			t.Errorf("Expected valid config when Junie is installed and credentialed; issues: %v", issues)
 		}
-	} else {
-		if valid {
-			t.Errorf("Expected invalid config when Junie not available")
+		if len(issues) != 0 {
+			t.Errorf("Expected no issues when Junie is installed and credentialed, got: %v", issues)
 		}
-		if len(issues) == 0 {
-			t.Errorf("Expected issues when Junie not available")
+		return
+	}
+
+	if valid {
+		t.Errorf("Expected invalid config when Junie not available")
+	}
+	if len(issues) == 0 {
+		t.Errorf("Expected issues when Junie not available")
+	}
+	if !installed {
+		found := false
+		for _, issue := range issues {
+			if issue == "junie command not installed" {
+				found = true
+			}
 		}
+		if !found {
+			t.Errorf("Expected a 'junie command not installed' issue, got: %v", issues)
+		}
+	}
+}
+
+// TestJunieCLIStubs_AreStubsInThisModule records, as an executable fact, WHY
+// the installed+credentialed branch of TestJunieProvider_ValidateConfig does
+// not run here: junie_cli_stub.go hardcodes both predicates to false, so that
+// branch is statically dead in this module. That is why an assertion-free
+// branch survived there unnoticed.
+//
+// If the Junie CLI is ever really wired up, this test fails and points at the
+// branch that then needs real coverage, instead of that branch silently
+// resuming its old habit of checking nothing.
+func TestJunieCLIStubs_AreStubsInThisModule(t *testing.T) {
+	if junie.IsJunieInstalled() {
+		t.Errorf("IsJunieInstalled is a stub returning false in this module; " +
+			"it now returns true, so TestJunieProvider_ValidateConfig's " +
+			"installed branch is live and needs reviewing")
+	}
+	if junie.IsJunieAuthenticated() {
+		t.Errorf("IsJunieAuthenticated is a stub returning false in this module; " +
+			"it now returns true, so the credentialed branch is live and " +
+			"needs reviewing")
 	}
 }

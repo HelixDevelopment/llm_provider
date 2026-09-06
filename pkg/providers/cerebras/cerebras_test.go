@@ -721,15 +721,38 @@ func TestCerebrasProvider_WaitWithJitter(t *testing.T) {
 	provider := NewCerebrasProvider("key", "", "")
 	ctx := context.Background()
 
-	// Test that wait completes
+	baseDelay := 10 * time.Millisecond
+
+	// Test that wait completes. The lower bound is load-robust: extra CPU
+	// pressure can only delay a timer, never fire it early.
 	start := time.Now()
-	provider.waitWithJitter(ctx, 10*time.Millisecond)
+	provider.waitWithJitter(ctx, baseDelay)
 	elapsed := time.Since(start)
 
-	// Should wait at least 10ms
-	assert.GreaterOrEqual(t, elapsed, 10*time.Millisecond)
-	// Should not wait more than 15ms (10ms + 10% jitter + some margin)
-	assert.LessOrEqual(t, elapsed, 20*time.Millisecond)
+	assert.GreaterOrEqual(t, elapsed, baseDelay)
+
+	// Upper bound: deliberately NOT asserted in wall-clock time. Elapsed time
+	// also contains scheduler latency this package does not control, so a
+	// wall-clock ceiling measures the host at least as much as it measures
+	// waitWithJitter. Reproduced under deliberate CPU load as
+	// `"49.495637ms" is not less than or equal to "20ms"`.
+	// The property that ceiling was proxying -- the timer is armed for the
+	// base delay plus AT MOST 10% jitter -- is asserted directly below, on
+	// every value the production path actually computes.
+	minD, maxD := jitteredDelay(baseDelay), jitteredDelay(baseDelay)
+	for i := 0; i < 100000; i++ {
+		d := jitteredDelay(baseDelay)
+		if d < minD {
+			minD = d
+		}
+		if d > maxD {
+			maxD = d
+		}
+	}
+	assert.GreaterOrEqual(t, minD, baseDelay,
+		"jittered delay must never be shorter than the base delay")
+	assert.Less(t, maxD, baseDelay+baseDelay/10,
+		"jitter must never exceed 10% of the base delay")
 }
 
 func TestCerebrasProvider_WaitWithJitter_ContextCancelled(t *testing.T) {

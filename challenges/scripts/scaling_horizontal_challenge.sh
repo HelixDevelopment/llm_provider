@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 # scaling_horizontal_challenge.sh — anti-bluff Scaling Challenge for
 # LLMProvider per CONST-035 + CONST-050(B). Cascade per CONST-051(A).
+#
+# ── EXIT CODES — three-valued, and 2 is NEVER a pass ─────────────────────────
+#   0  the challenge ran against a real replica set and every assertion passed
+#   1  a real finding: the replica set was there to be tested and an assertion failed
+#   2  COULD NOT DETERMINE — $LLMPROVIDER_VD_SCALING_REPLICA_URLS is
+#      unset, or fewer than two of the listed replicas answered 200 — a
+#      horizontal-scaling claim cannot be tested against one replica.
+#      NOTHING was measured, so the subject is NOT known to be healthy.
+#
+# Why the third value exists. Every branch below that could not reach its
+# replica set used to print "PASSED (SKIP-OK)" and exit 0. That made a DNS blip, a
+# restarting replica set, an unexported variable and a typo'd URL
+# indistinguishable — BY EXIT CODE — from a genuine pass, so any caller that
+# reads the exit status (the only thing most callers read) was told the subject
+# had been tested and was fine when in fact nothing had been tested at all.
+# "Could not test" must never read as "tested and fine".
 
 set -uo pipefail
 REPLICAS="${LLMPROVIDER_VD_SCALING_REPLICA_URLS:-}"
@@ -12,9 +28,10 @@ echo "=== LLMProvider Scaling Challenge ==="
 echo "  replicas=$REPLICAS reqs=$REQS conc=$CONC pass≥${MIN_PCT}%"
 
 if [[ -z "$REPLICAS" ]]; then
-    echo "[1/6] SKIP: LLMPROVIDER_VD_SCALING_REPLICA_URLS unset — SKIP-OK: #env-single-replica"
-    echo "=== LLMProvider Scaling Challenge: PASSED (SKIP-OK) ==="
-    exit 0
+    echo "[1/6] COULD NOT DETERMINE: LLMPROVIDER_VD_SCALING_REPLICA_URLS is unset — no replica set to test."
+    echo "  Nothing was measured. LLMProvider Scaling Challenge is NOT known to be healthy."
+    echo "=== LLMProvider Scaling Challenge: COULD NOT DETERMINE (#env-no-replicas) ==="
+    exit 2
 fi
 
 IFS=',' read -r -a URLS <<< "$REPLICAS"
@@ -25,9 +42,10 @@ for u in "${URLS[@]}"; do
     [[ "$c" == "200" ]] && REACH+=("$u") && echo "  reachable: $u"
 done
 if [[ ${#REACH[@]} -lt 2 ]]; then
-    echo "[1/6] SKIP: ${#REACH[@]} reachable — SKIP-OK: #env-single-replica"
-    echo "=== LLMProvider Scaling Challenge: PASSED (SKIP-OK) ==="
-    exit 0
+    echo "[1/6] COULD NOT DETERMINE: only ${#REACH[@]} of ${#URLS[@]} replica(s) answered 200 — need at least 2."
+    echo "  Nothing was measured. LLMProvider Scaling Challenge is NOT known to be healthy."
+    echo "=== LLMProvider Scaling Challenge: COULD NOT DETERMINE (#env-single-replica) ==="
+    exit 2
 fi
 echo "[1/6] Topology: ${#REACH[@]} replicas — PASS"
 

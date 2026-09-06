@@ -772,9 +772,34 @@ func TestWaitWithJitter(t *testing.T) {
 	p.waitWithJitter(ctx, baseDelay)
 	elapsed := time.Since(start)
 
-	// Should be at least 50% of base delay and at most 150% of base delay
-	assert.GreaterOrEqual(t, elapsed, 50*time.Millisecond)
-	assert.LessOrEqual(t, elapsed, 200*time.Millisecond)
+	// waitWithJitter only ever ADDS jitter, so the true lower bound is the
+	// full base delay, not half of it. Tightened rather than relaxed. This
+	// bound is load-robust: extra CPU pressure can only delay a timer.
+	assert.GreaterOrEqual(t, elapsed, baseDelay)
+
+	// Upper bound: deliberately NOT asserted in wall-clock time. Elapsed time
+	// also contains scheduler latency this package does not control, so a
+	// wall-clock ceiling measures the host at least as much as it measures
+	// waitWithJitter. Not reproduced in this session
+	// (this ceiling carried 100ms of slack), but it is the same defect as the
+	// five that were reproduced; a bigger constant is not a fix.
+	// The property that ceiling was proxying -- the timer is armed for the
+	// base delay plus AT MOST 10% jitter -- is asserted directly below, on
+	// every value the production path actually computes.
+	minD, maxD := jitteredDelay(baseDelay), jitteredDelay(baseDelay)
+	for i := 0; i < 100000; i++ {
+		d := jitteredDelay(baseDelay)
+		if d < minD {
+			minD = d
+		}
+		if d > maxD {
+			maxD = d
+		}
+	}
+	assert.GreaterOrEqual(t, minD, baseDelay,
+		"jittered delay must never be shorter than the base delay")
+	assert.Less(t, maxD, baseDelay+baseDelay/10,
+		"jitter must never exceed 10% of the base delay")
 }
 
 func TestIsAuthRetryableStatus(t *testing.T) {

@@ -9,6 +9,14 @@
 #   normal:    exits 0 only when the runner exits 0 (all 23
 #              invariants pass). Any deviation FAILS.
 #
+# Exit codes — three-valued, and 2 is NEVER a pass:
+#   0  the runner ran and every invariant passed
+#   1  a real finding (or, in mutate mode, an undetected mutation)
+#   2  COULD NOT DETERMINE — there is no Go toolchain on PATH, so the runner
+#      could not be executed at all. This used to print "PASSED (SKIP-OK)" and
+#      exit 0: a machine with no Go was reported as a machine whose 23
+#      invariants all held.
+#
 #   mutate:    sets LLMPROVIDER_MUTATE_RUNNER=1 which inverts
 #              invariant 3 (circuit.opens_after_failures.*)
 #              inside the runner. The runner MUST then exit
@@ -41,9 +49,11 @@ echo "  mode=${MODE}"
 echo "  module=${MODULE_DIR}"
 
 if ! command -v go >/dev/null 2>&1; then
-    echo "SKIP-OK: #env-no-go-toolchain"
-    echo "=== Describe Challenge: PASSED (SKIP-OK) ==="
-    exit 0
+    echo "COULD NOT DETERMINE: #env-no-go-toolchain — 'go' is not on PATH, so"
+    echo "  the in-process Challenge runner could not be executed. NOTHING was"
+    echo "  measured: the 23 invariants are NOT known to hold."
+    echo "=== Describe Challenge: COULD NOT DETERMINE ==="
+    exit 2
 fi
 
 cd "${MODULE_DIR}"

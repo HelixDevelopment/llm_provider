@@ -1428,14 +1428,38 @@ func TestSimpleOpenRouterProvider_HealthCheck_NetworkError(t *testing.T) {
 func TestSimpleOpenRouterProvider_WaitWithJitter(t *testing.T) {
 	provider := NewSimpleOpenRouterProvider("test-key")
 
-	// Test normal wait
+	baseDelay := 50 * time.Millisecond
+
+	// Test normal wait. The lower bound is load-robust: extra CPU pressure
+	// can only delay a timer, never fire it early.
 	start := time.Now()
-	provider.waitWithJitter(context.Background(), 50*time.Millisecond)
+	provider.waitWithJitter(context.Background(), baseDelay)
 	elapsed := time.Since(start)
 
-	// Should wait at least the delay (50ms) but not more than delay + 10% jitter + margin
-	assert.GreaterOrEqual(t, elapsed.Milliseconds(), int64(50))
-	assert.Less(t, elapsed.Milliseconds(), int64(70)) // 50ms + 10% jitter + margin
+	assert.GreaterOrEqual(t, elapsed, baseDelay)
+
+	// Upper bound: deliberately NOT asserted in wall-clock time. Elapsed time
+	// also contains scheduler latency this package does not control, so a
+	// wall-clock ceiling measures the host at least as much as it measures
+	// waitWithJitter. Reproduced under deliberate CPU load as
+	// `"82" is not less than "70"`.
+	// The property that ceiling was proxying -- the timer is armed for the
+	// base delay plus AT MOST 10% jitter -- is asserted directly below, on
+	// every value the production path actually computes.
+	minD, maxD := jitteredDelay(baseDelay), jitteredDelay(baseDelay)
+	for i := 0; i < 100000; i++ {
+		d := jitteredDelay(baseDelay)
+		if d < minD {
+			minD = d
+		}
+		if d > maxD {
+			maxD = d
+		}
+	}
+	assert.GreaterOrEqual(t, minD, baseDelay,
+		"jittered delay must never be shorter than the base delay")
+	assert.Less(t, maxD, baseDelay+baseDelay/10,
+		"jitter must never exceed 10% of the base delay")
 }
 
 // Test waitWithJitter with cancelled context

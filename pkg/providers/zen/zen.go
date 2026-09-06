@@ -1021,12 +1021,24 @@ func isAuthRetryableStatus(statusCode int) bool {
 
 // waitWithJitter waits for the specified duration plus random jitter
 func (p *ZenProvider) waitWithJitter(ctx context.Context, delay time.Duration) {
-	// Add 10% jitter - using math/rand is acceptable for non-security jitter
-	jitter := time.Duration(rand.Float64() * 0.1 * float64(delay)) // #nosec G404 - jitter doesn't require cryptographic randomness
 	select {
 	case <-ctx.Done():
-	case <-time.After(delay + jitter):
+	case <-time.After(jitteredDelay(delay)):
 	}
+}
+
+// jitteredDelay returns delay plus up to 10% random jitter -- the exact
+// duration waitWithJitter arms its timer with.
+//
+// Extracted so that the "at most 10% over" bound can be asserted directly and
+// deterministically. Asserting it through wall-clock elapsed time does not
+// work: elapsed time also contains scheduler latency the host controls, so a
+// wall-clock ceiling measures the machine at least as much as it measures this
+// package, and fails on a busy host while the code is correct.
+func jitteredDelay(delay time.Duration) time.Duration {
+	// Add 10% jitter - using math/rand is acceptable for non-security jitter
+	jitter := time.Duration(rand.Float64() * 0.1 * float64(delay)) // #nosec G404 - jitter doesn't require cryptographic randomness
+	return delay + jitter
 }
 
 // nextDelay calculates the next delay using exponential backoff
@@ -1213,5 +1225,17 @@ func (p *ZenProvider) GetFreeModels(ctx context.Context) ([]ZenModelInfo, error)
 	return freeModels, nil
 }
 
-// IsOpenCodeInstalled returns false (CLI not available in standalone module)
-func IsOpenCodeInstalled() bool { return false }
+// IsOpenCodeInstalled reports whether the `opencode` CLI is present and
+// executable on PATH.
+//
+// It used to be a hardcoded `return false` with a comment claiming the CLI was
+// "not available in standalone module". That was not true of the module: this
+// package already answers exactly this question correctly, in zen_http.go, and
+// USES the CLI (StartServer execs it). What the stub did have was ZERO
+// production callers -- its only three call sites were test skip-guards, which
+// it therefore held permanently dark, including on hosts where opencode IS
+// installed.
+//
+// It delegates rather than repeating the probe, so the two entry points to the
+// same question cannot drift apart.
+func IsOpenCodeInstalled() bool { return IsZenHTTPAvailable() }
