@@ -71,7 +71,16 @@ case "${MODE}" in
         # Belt-and-braces: assert the summary line carries
         # FAIL=0 — defends against an accidental exit-0 with
         # buried FAILs.
-        if ! echo "${out}" | grep -q "FAIL=0"; then
+        # Matched with bash's own pattern operator, NOT `echo | grep -q`.
+        # Under the `set -o pipefail` above, grep -q exits the instant it
+        # matches, echo is killed by SIGPIPE (141), and pipefail promotes that
+        # to the pipeline's status — so `if !` would take the FAILED branch
+        # BECAUSE the FAIL=0 line was present. Measured on this host with the
+        # marker present in every iteration: 0/200 non-zero at a 4 KiB body,
+        # 200/200 at 16 KiB. Today this runner emits 2402 bytes with FAIL=0 at
+        # offset 2391, so the trap was latent here rather than firing; it goes
+        # live the moment the runner gets chattier or grows a stack trace.
+        if [[ ${out} != *"FAIL=0"* ]]; then
             echo "=== Describe Challenge: FAILED (no FAIL=0 line) ==="
             exit 1
         fi

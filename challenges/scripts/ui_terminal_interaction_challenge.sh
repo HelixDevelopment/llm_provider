@@ -36,7 +36,12 @@ echo "[1/4] Binary present: PASS"
 assert_no_panic() {
     local label="$1" body="$2"
     for pat in "${USER_HOSTILE[@]}"; do
-        printf '%s' "$body" | grep -qE "$pat" && { echo "  FAIL: $label leaked: $pat"; return 1; }
+        # Bash's own regex operator, NOT `printf ... | grep -qE`. Under the
+        # `set -o pipefail` above, grep -q closing the pipe on a MATCH kills
+        # printf with SIGPIPE (141) and pipefail promotes it, so the `&&` did
+        # not fire — this check FAILED OPEN on a body over ~4 KiB, missing the
+        # leak precisely because it was there.
+        [[ $body =~ $pat ]] && { echo "  FAIL: $label leaked: $pat"; return 1; }
     done
     # An explicit success. Without it the function returned the status of the
     # LAST grep in the loop, which is 1 exactly when no hostile pattern was

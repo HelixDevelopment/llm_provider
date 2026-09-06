@@ -51,7 +51,11 @@ echo "[1/6] Topology: ${#REACH[@]} replicas — PASS"
 
 for u in "${REACH[@]}"; do
     b=$(curl -sS --max-time 5 "$u/health" 2>/dev/null || true)
-    printf '%s' "$b" | grep -qE '"status"\s*:\s*"(ok|healthy|UP)"' || { echo "[2/6] FAIL: $u"; exit 1; }
+    # Bash's own regex, NOT `printf ... | grep -qE`: under the `set -o pipefail`
+    # above, grep -q closing the pipe on a match kills printf with SIGPIPE (141)
+    # and pipefail promotes it — the check would FAIL BECAUSE the status matched.
+    status_re='"status"[[:space:]]*:[[:space:]]*"(ok|healthy|UP)"'
+    [[ $b =~ $status_re ]] || { echo "[2/6] FAIL: $u"; exit 1; }
 done
 echo "[2/6] Schema sanity: PASS"
 
