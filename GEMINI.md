@@ -2,18 +2,18 @@
 ## INHERITED FROM Helix Constitution
 
 This module is a submodule of a project that includes the Helix
-Constitution submodule. All rules in `constitution/AGENTS.md` and the
+Constitution submodule. All rules in `constitution/GEMINI.md` and the
 `constitution/Constitution.md` it references apply unconditionally.
 Locate the constitution submodule from any arbitrary nested depth
 using its `find_constitution.sh` helper.
 
 Canonical reference: https://github.com/HelixDevelopment/HelixConstitution
 <!-- END constitution-inheritance pointer (managed) -->
-# AGENTS.md - LLMProvider Module
+# GEMINI.md - LLMProvider Module
 
-## INHERITED FROM constitution/AGENTS.md
+## INHERITED FROM constitution/GEMINI.md
 
-All rules in `constitution/AGENTS.md` (and the `constitution/Constitution.md` it references) apply unconditionally. This file's rules below extend them — they MUST NOT weaken any inherited rule. Use `constitution/find_constitution.sh` from the parent project root to resolve the absolute path of the submodule from any nested location.
+All rules in `constitution/GEMINI.md` (and the `constitution/Constitution.md` it references) apply unconditionally. This file's rules below extend them — they MUST NOT weaken any inherited rule. Use `constitution/find_constitution.sh` from the parent project root to resolve the absolute path of the submodule from any nested location.
 
 ## Definition of Done
 
