@@ -15,6 +15,7 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
 
 // modelsURL derives the /models endpoint from the configured baseURL so
@@ -106,6 +107,10 @@ type ModalErrorResponse struct {
 	} `json:"error"`
 }
 
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP client.
+// Override with LLMPROVIDER_MODAL_TIMEOUT (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
+
 func DefaultRetryConfig() RetryConfig {
 	return RetryConfig{
 		MaxRetries:   3,
@@ -121,18 +126,25 @@ func NewModalProvider(apiKey, apiKeyID, baseURL, model string) *ModalProvider {
 
 func NewModalProviderWithRetry(apiKey, apiKeyID, baseURL, model string, retryConfig RetryConfig) *ModalProvider {
 	if baseURL == "" {
-		baseURL = ModalAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_MODAL_BASE_URL.
+		baseURL = settings.BaseURL("modal", ModalAPIURL)
 	}
 	if model == "" {
-		model = ModalModel
+		// The compiled constant is a FALLBACK, not a decision this
+		// library gets to keep making. A vendor retiring or rate-capping
+		// a model must be answerable with an environment variable, not a
+		// release. See pkg/settings: LLMPROVIDER_MODAL_MODEL.
+		model = settings.Model("modal", ModalModel)
 	}
 
 	p := &ModalProvider{
-		apiKey:      apiKey,
-		apiKeyID:    apiKeyID,
-		baseURL:     baseURL,
-		model:       model,
-		httpClient:  &http.Client{Timeout: 120 * time.Second},
+		apiKey:   apiKey,
+		apiKeyID: apiKeyID,
+		baseURL:  baseURL,
+		model:    model,
+		// LLMPROVIDER_MODAL_TIMEOUT.
+		httpClient:  &http.Client{Timeout: settings.Timeout("modal", DefaultHTTPTimeout)},
 		retryConfig: retryConfig,
 	}
 

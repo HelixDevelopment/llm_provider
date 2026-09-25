@@ -14,6 +14,17 @@ import (
 )
 
 func TestNewOllamaProvider(t *testing.T) {
+	// The constructor now consults the environment when an argument is empty,
+	// so this test states the environment it assumes instead of inheriting
+	// whatever the machine happens to export. Without this it would pass on a
+	// clean workstation and fail on any host where an operator has legitimately
+	// exported OLLAMA_HOST — a test that depends on an unstated ambient
+	// condition is not measuring the constructor.
+	clearCanonical(t)
+	t.Setenv(EnvBaseURL, "")
+	t.Setenv(EnvModel, "")
+	t.Setenv(EnvTimeout, "")
+
 	tests := []struct {
 		name     string
 		baseURL  string
@@ -204,17 +215,48 @@ func TestOllamaProvider_CompleteStream_Error(t *testing.T) {
 	assert.Equal(t, "error", resp.FinishReason)
 }
 
+// TestOllamaProvider_CompleteStream_ContextCancellation asserts the BEHAVIOUR —
+// cancelling the context terminates the stream and closes the channel — rather
+// than asserting that it happens inside an arbitrary wall-clock window.
+//
+// WHAT WAS WRONG BEFORE. The test raced three frozen durations against each
+// other: the handler slept 100ms, the context expired after 10ms, and the
+// assertion gave up after 50ms. Nothing about cancellation is being measured
+// there; what is measured is whether this machine scheduled a goroutine within
+// 50ms. On a loaded host it does not, and the test failed with cancellation
+// working perfectly — measured at 2 failures in 10 runs. A time-based threshold
+// is not a test of behaviour, it is a test of the machine.
+//
+// Two of the three durations are now gone. The handler blocks until the test
+// releases it, so the response cannot win the race by accident; the context is
+// cancelled explicitly, so cancellation is an event the test CAUSES rather than
+// one it waits out. The single remaining bound is a deadlock guard, orders of
+// magnitude larger than the propagation it protects, and it is not the
+// assertion — see the comment on it below.
+//
+// A NOTE ON WHAT "CLOSED" MEANS HERE. The channel is unbuffered and the
+// producer sends an error response BEFORE its `defer close(ch)` runs, so a
+// cancelled stream yields one value and THEN closes. The old `case <-ch:`
+// therefore accepted that value and never observed a closure at all — its own
+// comment ("Channel should be closed") described something it did not check.
+// Draining to closure is what makes this an assertion about termination.
 func TestOllamaProvider_CompleteStream_ContextCancellation(t *testing.T) {
+	// The handler blocks until the test releases it. A fixed sleep only makes
+	// the response LIKELY to lose the race against cancellation; blocking makes
+	// it impossible for it to win, which is what the test actually requires.
+	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(100 * time.Millisecond) // Simulate delay
+		<-release
 		w.WriteHeader(http.StatusOK)
 	}))
+	// LIFO: release the handler first, so Close() is not left waiting on an
+	// in-flight request that is parked on the channel above.
 	defer server.Close()
+	defer close(release)
 
 	provider := NewOllamaProvider(server.URL, "llama2")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
 
 	req := &models.LLMRequest{
 		ID:     "test-123",
@@ -223,14 +265,43 @@ func TestOllamaProvider_CompleteStream_ContextCancellation(t *testing.T) {
 
 	ch, err := provider.CompleteStream(ctx, req)
 	require.NoError(t, err)
-	assert.NotNil(t, ch)
+	require.NotNil(t, ch)
 
-	// Channel should be closed due to context cancellation
-	select {
-	case <-ch:
-		// Expected
-	case <-time.After(50 * time.Millisecond):
-		t.Error("Expected channel to be closed due to context cancellation")
+	// The cause, applied deterministically rather than waited for.
+	cancel()
+
+	// A bound is still needed so a genuine hang fails THIS test instead of
+	// hanging the whole package, but it is a DEADLOCK GUARD, not a threshold:
+	// it is derived from the test's own deadline and is ~3 orders of magnitude
+	// larger than the sub-millisecond propagation it guards, so no amount of
+	// machine load can turn it into a false failure.
+	guard := 30 * time.Second
+	if d, ok := t.Deadline(); ok {
+		if half := time.Until(d) / 2; half > 0 && half < guard {
+			guard = half
+		}
+	}
+	timer := time.NewTimer(guard)
+	defer timer.Stop()
+
+	sawResponse := false
+	for {
+		select {
+		case resp, open := <-ch:
+			if !open {
+				// THE ASSERTION: the producer goroutine ran its deferred
+				// close, so cancellation propagated and the stream terminated.
+				assert.True(t, sawResponse,
+					"cancelled stream closed without reporting why; expected a terminal error response first")
+				return
+			}
+			sawResponse = true
+			assert.Equal(t, "error", resp.FinishReason,
+				"a cancelled stream should terminate with an error response")
+		case <-timer.C:
+			t.Fatalf("context was cancelled but the response channel never closed within %s: "+
+				"cancellation did not propagate to the streaming goroutine", guard)
+		}
 	}
 }
 

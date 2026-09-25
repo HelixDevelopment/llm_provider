@@ -15,7 +15,13 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_SARVAM_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
 
 // modelsURL derives the /models endpoint from the configured baseURL so
 // health checks honor operator overrides (proxies, mirrors, httptest in
@@ -120,10 +126,13 @@ func NewSarvamProvider(apiKey, baseURL, model string) *SarvamProvider {
 
 func NewSarvamProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *SarvamProvider {
 	if baseURL == "" {
-		baseURL = SarvamAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_SARVAM_BASE_URL.
+		baseURL = settings.BaseURL("sarvam", SarvamAPIURL)
 	}
 	if model == "" {
-		model = SarvamModel
+		// LLMPROVIDER_SARVAM_MODEL overrides this compiled fallback.
+		model = settings.Model("sarvam", SarvamModel)
 	}
 
 	p := &SarvamProvider{
@@ -131,14 +140,26 @@ func NewSarvamProviderWithRetry(apiKey, baseURL, model string, retryConfig Retry
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("sarvam", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}
 
+	// ModelsEndpoint is DERIVED from the configured base URL, not pinned to the
+	// production constant — the same CONST-051(B) config-injection fix already
+	// applied to HealthCheck via modelsURL() at the top of this file. Pinning it
+	// meant a caller could point this provider at a mirror, a proxy or a test
+	// double for completions while discovery silently kept talking to
+	// api.sarvam.ai, which is both a surprise in production and the reason
+	// TestGetCapabilities could only ever be an availability probe: no fixture
+	// could reach the code path.
+	//
+	// Production behaviour is unchanged. With the default base URL this
+	// evaluates to exactly SarvamModelsURL, and TestModelsURLMatchesConstant
+	// asserts that equality rather than leaving it to inspection.
 	p.discoverer = discovery.NewDiscoverer(discovery.ProviderConfig{
 		ProviderName:   "sarvam",
-		ModelsEndpoint: SarvamModelsURL,
+		ModelsEndpoint: p.modelsURL(),
 		ModelsDevID:    "sarvam",
 		APIKey:         apiKey,
 		FallbackModels: []string{

@@ -18,7 +18,46 @@ import (
 
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// Env-var provider keys for this file's settings.
+//
+// WHY THIS FILE USES A DIFFERENT KEY FOR THE ENDPOINT THAN zen_http.go DOES.
+// The two files are two TRANSPORTS for the same vendor, and they do not talk to
+// the same place: this one calls the hosted Zen API at ZenAPIURL, while
+// zen_http.go talks to a locally running opencode server at
+// DefaultZenBaseURL ("http://localhost:4096"). Sharing one
+// LLMPROVIDER_ZEN_BASE_URL between them would mean an operator pointing the
+// local provider at their own server would SILENTLY redirect the cloud provider
+// to a host that does not speak that protocol — precisely the quiet
+// misconfiguration this whole settings layer exists to prevent. So the endpoint
+// and the transport timeout are keyed to "zen_api", while the MODEL stays on
+// "zen": the model id genuinely is shared between the two transports, and
+// zen_http.go already resolves it under that key.
+const (
+	// SettingsProviderAPI keys the hosted-API endpoint and timeout:
+	// LLMPROVIDER_ZEN_API_BASE_URL and LLMPROVIDER_ZEN_API_TIMEOUT.
+	SettingsProviderAPI = "zen_api"
+	// SettingsProviderModel keys the shared default model:
+	// LLMPROVIDER_ZEN_MODEL. Same key zen_http.go uses, deliberately.
+	SettingsProviderModel = "zen"
+)
+
+// DefaultZenAPITimeout is the compiled fallback for the hosted-API transport.
+// It is deliberately NOT DefaultZenTimeout (180s, declared in zen_http.go for
+// the local opencode server): a cloud round-trip and a localhost round-trip are
+// not the same wait. Override with LLMPROVIDER_ZEN_API_TIMEOUT.
+const DefaultZenAPITimeout = 120 * time.Second
+
+// SettingsProviderModels keys the model-discovery probe:
+// LLMPROVIDER_ZEN_MODELS_TIMEOUT.
+const SettingsProviderModels = "zen_models"
+
+// DefaultZenModelsTimeout is the compiled fallback for that probe. It is
+// deliberately far shorter than either completion timeout: listing models is
+// a cheap GET, and a slow one should fail fast rather than stall a caller.
+const DefaultZenModelsTimeout = 10 * time.Second
 
 var log = logrus.New()
 
@@ -172,7 +211,10 @@ func discoverModelsFromAPI() []string {
 	req.Header.Set(AnonymousDeviceHeader, generateDeviceID())
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	// A short probe, not a completion: LLMPROVIDER_ZEN_MODELS_TIMEOUT keys it
+	// apart from the completion timeouts so shortening a discovery probe does
+	// not shorten a generation, and vice versa.
+	client := &http.Client{Timeout: settings.Timeout(SettingsProviderModels, DefaultZenModelsTimeout)}
 	resp, err := client.Do(req)
 	if err != nil {
 		log.WithError(err).Debug("Failed to fetch models from Zen API")
@@ -407,10 +449,14 @@ func NewZenProvider(apiKey, baseURL, model string) *ZenProvider {
 // If apiKey is empty and model is a free model, anonymous mode is enabled
 func NewZenProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *ZenProvider {
 	if baseURL == "" {
-		baseURL = ZenAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// gets to keep making. See pkg/settings:
+		// LLMPROVIDER_ZEN_API_BASE_URL.
+		baseURL = settings.BaseURL(SettingsProviderAPI, ZenAPIURL)
 	}
 	if model == "" {
-		model = DefaultZenModel
+		// LLMPROVIDER_ZEN_MODEL — shared with zen_http.go by design.
+		model = settings.Model(SettingsProviderModel, DefaultZenModel)
 	}
 
 	// Determine if we're in anonymous mode (no API key, free model)
@@ -430,7 +476,8 @@ func NewZenProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryCon
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			// LLMPROVIDER_ZEN_API_TIMEOUT.
+			Timeout: settings.Timeout(SettingsProviderAPI, DefaultZenAPITimeout),
 		},
 		retryConfig:   retryConfig,
 		deviceID:      deviceID,
@@ -441,14 +488,28 @@ func NewZenProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryCon
 // NewZenProviderAnonymous creates a Zen provider for anonymous access (free models only)
 func NewZenProviderAnonymous(model string) *ZenProvider {
 	if model == "" {
-		model = DefaultZenModel
+		// LLMPROVIDER_ZEN_MODEL. An operator may name a DIFFERENT free model
+		// here; the clamp below still enforces the free-only invariant.
+		model = settings.Model(SettingsProviderModel, DefaultZenModel)
 	}
-	// Ensure only free models can be used anonymously
+	// Ensure only free models can be used anonymously.
+	//
+	// This clamp deliberately does NOT consult the environment. It is a safety
+	// invariant, not a default: its whole job is to refuse a model that would
+	// bill an anonymous caller, and resolving it through settings would let the
+	// same variable that caused the violation also choose the remedy — so a
+	// non-free LLMPROVIDER_ZEN_MODEL would land right back here. The compiled
+	// free model is the only value guaranteed to satisfy the invariant.
 	if !isFreeModel(model) {
 		log.WithField("model", model).Warn("Non-free model requested for anonymous access, defaulting to free model")
 		model = DefaultZenModel
 	}
-	return NewZenProviderWithRetry("", ZenAPIURL, model, DefaultRetryConfig())
+	// Pass an EMPTY baseURL rather than ZenAPIURL. Handing the constant in
+	// positionally made this call bypass the resolution in
+	// NewZenProviderWithRetry entirely, so LLMPROVIDER_ZEN_API_BASE_URL was
+	// honoured for every construction path except this one — the frozen value
+	// won silently, which is the worst shape this defect takes.
+	return NewZenProviderWithRetry("", "", model, DefaultRetryConfig())
 }
 
 // Complete performs a non-streaming completion request
@@ -960,12 +1021,24 @@ func isAuthRetryableStatus(statusCode int) bool {
 
 // waitWithJitter waits for the specified duration plus random jitter
 func (p *ZenProvider) waitWithJitter(ctx context.Context, delay time.Duration) {
-	// Add 10% jitter - using math/rand is acceptable for non-security jitter
-	jitter := time.Duration(rand.Float64() * 0.1 * float64(delay)) // #nosec G404 - jitter doesn't require cryptographic randomness
 	select {
 	case <-ctx.Done():
-	case <-time.After(delay + jitter):
+	case <-time.After(jitteredDelay(delay)):
 	}
+}
+
+// jitteredDelay returns delay plus up to 10% random jitter -- the exact
+// duration waitWithJitter arms its timer with.
+//
+// Extracted so that the "at most 10% over" bound can be asserted directly and
+// deterministically. Asserting it through wall-clock elapsed time does not
+// work: elapsed time also contains scheduler latency the host controls, so a
+// wall-clock ceiling measures the machine at least as much as it measures this
+// package, and fails on a busy host while the code is correct.
+func jitteredDelay(delay time.Duration) time.Duration {
+	// Add 10% jitter - using math/rand is acceptable for non-security jitter
+	jitter := time.Duration(rand.Float64() * 0.1 * float64(delay)) // #nosec G404 - jitter doesn't require cryptographic randomness
+	return delay + jitter
 }
 
 // nextDelay calculates the next delay using exponential backoff
@@ -1018,7 +1091,11 @@ func (p *ZenProvider) GetCapabilities() *models.ProviderCapabilities {
 			"api_version":  "v1",
 			"note":         i18n.Tr(context.Background(), "provider.zen.description", nil),
 			"free_tier":    "true",
-			"base_url":     ZenAPIURL,
+			// The endpoint actually in force, not the compiled constant.
+			// Reporting ZenAPIURL here made this metadata LIE the moment
+			// LLMPROVIDER_ZEN_API_BASE_URL or an explicit baseURL argument was
+			// used — a diagnostic that names the wrong host is worse than none.
+			"base_url": p.baseURL,
 		},
 	}
 }
@@ -1148,5 +1225,17 @@ func (p *ZenProvider) GetFreeModels(ctx context.Context) ([]ZenModelInfo, error)
 	return freeModels, nil
 }
 
-// IsOpenCodeInstalled returns false (CLI not available in standalone module)
-func IsOpenCodeInstalled() bool { return false }
+// IsOpenCodeInstalled reports whether the `opencode` CLI is present and
+// executable on PATH.
+//
+// It used to be a hardcoded `return false` with a comment claiming the CLI was
+// "not available in standalone module". That was not true of the module: this
+// package already answers exactly this question correctly, in zen_http.go, and
+// USES the CLI (StartServer execs it). What the stub did have was ZERO
+// production callers -- its only three call sites were test skip-guards, which
+// it therefore held permanently dark, including on hosts where opencode IS
+// installed.
+//
+// It delegates rather than repeating the probe, so the two entry points to the
+// same question cannot drift apart.
+func IsOpenCodeInstalled() bool { return IsZenHTTPAvailable() }

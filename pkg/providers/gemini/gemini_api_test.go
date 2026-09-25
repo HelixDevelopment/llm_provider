@@ -1020,8 +1020,32 @@ func TestGeminiAPIProvider_WaitWithJitter(t *testing.T) {
 	provider.waitWithJitter(ctx, baseDelay)
 	elapsed := time.Since(start)
 
+	// Lower bound only: load-robust, because extra CPU pressure can only
+	// delay a timer, never fire it early.
 	assert.GreaterOrEqual(t, elapsed, baseDelay)
-	assert.LessOrEqual(t, elapsed, 150*time.Millisecond)
+
+	// Upper bound: deliberately NOT asserted in wall-clock time. Elapsed time
+	// also contains scheduler latency this package does not control, so a
+	// wall-clock ceiling measures the host at least as much as it measures
+	// waitWithJitter. Reproduced under deliberate CPU load as
+	// `"158.920597ms" is not less than or equal to "150ms"`.
+	// The property that ceiling was proxying -- the timer is armed for the
+	// base delay plus AT MOST 10% jitter -- is asserted directly below, on
+	// every value the production path actually computes.
+	minD, maxD := jitteredDelay(baseDelay), jitteredDelay(baseDelay)
+	for i := 0; i < 100000; i++ {
+		d := jitteredDelay(baseDelay)
+		if d < minD {
+			minD = d
+		}
+		if d > maxD {
+			maxD = d
+		}
+	}
+	assert.GreaterOrEqual(t, minD, baseDelay,
+		"jittered delay must never be shorter than the base delay")
+	assert.Less(t, maxD, baseDelay+baseDelay/10,
+		"jitter must never exceed 10% of the base delay")
 }
 
 func TestGeminiAPIProvider_WaitWithJitter_ContextCancelled(t *testing.T) {

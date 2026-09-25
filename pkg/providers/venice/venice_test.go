@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -428,8 +429,53 @@ func TestHealthCheck_Error(t *testing.T) {
 	assert.Contains(t, err.Error(), "status 401")
 }
 
+// modelsFixture serves an OpenAI-compatible /models response, which is the
+// shape pkg/discovery parses when no custom ResponseParser is configured. The
+// returned URL is a chat-completions base URL, so the provider derives its
+// models endpoint from it exactly as it does in production.
+func modelsFixture(t *testing.T, ids ...string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/models") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// The adapter must authenticate discovery, not just completions.
+		assert.Equal(t, "Bearer venice-test-key", r.Header.Get("Authorization"))
+		data := make([]map[string]any, 0, len(ids))
+		for _, id := range ids {
+			data = append(data, map[string]any{"id": id, "object": "model"})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestGetCapabilities pins the ADAPTER'S BEHAVIOUR against a controlled
+// fixture.
+//
+// The flavour-matching loop below used to run against the LIVE Venice
+// catalogue. Its comment was right that pre-baked exact model IDs are a
+// CONST-036 violation, but the remedy it chose swapped one bluff for another:
+// a green run then meant "Venice is up, reachable from this machine, and still
+// publishes something llama-shaped" — a statement about a third party's
+// inventory, asserted by a unit test. It passed here only because this host has
+// egress; with HTTP(S)_PROXY pointed at a closed port it failed three
+// assertions at once (NotEmpty, hasLlama, hasUncensored).
+//
+// The loop is kept verbatim because the ADAPTER logic it exercises is real —
+// it just runs against a fixture whose contents this test controls, so what is
+// asserted is the plumbing, not Venice's uptime. The live catalogue is still
+// checked, by the opt-in probe at the bottom of this file.
 func TestGetCapabilities(t *testing.T) {
-	p := NewProvider("venice-test-key", "", "")
+	srv := modelsFixture(t,
+		"llama-3.3-70b",
+		"venice-uncensored-1-2",
+		"text-embedding-bge-m3",
+	)
+	p := NewProvider("venice-test-key", srv.URL+"/api/v1/chat/completions", "")
 	caps := p.GetCapabilities()
 
 	assert.True(t, caps.SupportsStreaming)
@@ -444,12 +490,10 @@ func TestGetCapabilities(t *testing.T) {
 	// Model IDs drift as Venice renames its catalogue (e.g.
 	// `venice-uncensored` → `venice-uncensored-1-2` /
 	// `venice-uncensored-role-play`; bare `llama-3.3-70b` got
-	// reissued as a versioned variant on some catalogues). Anti-bluff:
-	// the test asserts that the live Venice API returns AT LEAST ONE
-	// model matching each capability flavour, rather than exact
-	// pre-baked IDs. The original brittle equality assertions were a
-	// CONST-036 violation — they hardcoded model strings that
-	// LLMsVerifier should otherwise be the source of truth for.
+	// reissued as a versioned variant on some catalogues). The flavour
+	// match — rather than exact equality — is therefore still the right
+	// shape for this assertion, and it is what the OPT-IN live probe
+	// applies to the real catalogue.
 	hasLlama := false
 	hasUncensored := false
 	for _, m := range caps.SupportedModels {
@@ -460,14 +504,81 @@ func TestGetCapabilities(t *testing.T) {
 			hasUncensored = true
 		}
 	}
-	assert.True(t, hasLlama, "expected Venice to expose at least one llama-3* model; got %v", caps.SupportedModels)
-	assert.True(t, hasUncensored, "expected Venice to expose at least one uncensored-flavoured model; got %v", caps.SupportedModels)
+	assert.True(t, hasLlama, "expected the discovered catalogue to expose at least one llama-3* model; got %v", caps.SupportedModels)
+	assert.True(t, hasUncensored, "expected the discovered catalogue to expose at least one uncensored-flavoured model; got %v", caps.SupportedModels)
+	// And the chat-model filter still applies to whatever the endpoint returns.
+	assert.NotContains(t, caps.SupportedModels, "text-embedding-bge-m3")
 	assert.Contains(t, caps.SupportedFeatures, "web_search")
 	assert.Contains(t, caps.SupportedFeatures, "reasoning")
 	assert.Contains(t, caps.SupportedFeatures, "streaming")
 	assert.Equal(t, 131072, caps.Limits.MaxTokens)
 	assert.Equal(t, "true", caps.Metadata["web_search"])
 	assert.Equal(t, "venice", caps.Metadata["provider"])
+}
+
+// TestGetCapabilitiesDiscoveryUnavailable is the honest-unavailability half.
+//
+// When discovery cannot answer, SupportedModels MUST be empty — never the
+// deprecated FallbackModels catalogue this provider still passes to the
+// discoverer. Serving that list would hand a caller model IDs it may not be
+// able to invoke, which CONST-036 calls a structural bluff. The names are
+// asserted individually because "empty" alone would also pass if the list
+// leaked through under a different key.
+func TestGetCapabilitiesDiscoveryUnavailable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	p := NewProvider("venice-test-key", srv.URL+"/api/v1/chat/completions", "")
+	caps := p.GetCapabilities()
+
+	require.NotNil(t, caps)
+	assert.Empty(t, caps.SupportedModels,
+		"unreachable discovery must report NO models, not a stale hardcoded catalogue (CONST-036)")
+	for _, fallback := range []string{"llama-3.3-70b", "venice-uncensored", "zai-org-glm-4.7"} {
+		assert.NotContains(t, caps.SupportedModels, fallback,
+			"the deprecated FallbackModels list must never reach a caller")
+	}
+	// The rest of the record is still served: unavailable models do not make
+	// the provider's fixed capabilities unknown.
+	assert.True(t, caps.SupportsStreaming)
+	assert.Equal(t, "venice", caps.Metadata["provider"])
+}
+
+// TestModelsURLMatchesConstant guards the derivation that makes the discovery
+// endpoint config-injectable: with the DEFAULT base URL it must still resolve
+// to the production constant, byte for byte. Without this, deriving the
+// endpoint could silently change where production traffic goes.
+func TestModelsURLMatchesConstant(t *testing.T) {
+	assert.Equal(t, VeniceModelsURL, NewProvider("k", "", "").modelsURL)
+}
+
+// TestGetCapabilitiesLiveDiscovery is the live probe, kept but made OPT-IN.
+//
+// It is genuinely useful — it is the only thing here that would notice Venice
+// moving its models endpoint or retiring a whole model flavour — but it depends
+// on a third party and a real credential, so it must never be part of the
+// default suite. It SKIPS with a stated reason rather than failing, because
+// "nobody exported a key" is not a defect in this adapter.
+//
+//	VENICE_LIVE_DISCOVERY_TEST=1 VENICE_API_KEY=<real key> go test ./pkg/providers/venice/
+func TestGetCapabilitiesLiveDiscovery(t *testing.T) {
+	if os.Getenv("VENICE_LIVE_DISCOVERY_TEST") == "" {
+		t.Skip("live discovery probe is opt-in: set VENICE_LIVE_DISCOVERY_TEST=1 " + // SKIP-OK: #opt-in-live-probe
+			"together with a real VENICE_API_KEY to run it")
+	}
+	apiKey := os.Getenv("VENICE_API_KEY")
+	if apiKey == "" {
+		t.Skip("VENICE_LIVE_DISCOVERY_TEST is set but VENICE_API_KEY is empty; a live " + // SKIP-OK: #opt-in-live-probe
+			"probe without a credential would measure the credential, not the adapter")
+	}
+
+	caps := NewProvider(apiKey, "", "").GetCapabilities()
+	require.NotNil(t, caps)
+	assert.NotEmpty(t, caps.SupportedModels,
+		"live discovery with a real credential returned no models — either the "+
+			"Venice models endpoint moved or the credential is not valid")
 }
 
 func TestValidateConfig(t *testing.T) {

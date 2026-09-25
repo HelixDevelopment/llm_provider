@@ -15,7 +15,13 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_ZHIPU_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
 
 const (
 	ZhipuAPIURL     = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
@@ -113,10 +119,16 @@ func NewZhipuProvider(apiKey, baseURL, model string) *ZhipuProvider {
 
 func NewZhipuProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *ZhipuProvider {
 	if baseURL == "" {
-		baseURL = ZhipuAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_ZHIPU_BASE_URL.
+		baseURL = settings.BaseURL("zhipu", ZhipuAPIURL)
 	}
 	if model == "" {
-		model = ZhipuModel
+		// The compiled constant is a FALLBACK, not a decision this
+		// library gets to keep making. A vendor retiring or rate-capping
+		// a model must be answerable with an environment variable, not a
+		// release. See pkg/settings: LLMPROVIDER_ZHIPU_MODEL.
+		model = settings.Model("zhipu", ZhipuModel)
 	}
 
 	p := &ZhipuProvider{
@@ -124,7 +136,7 @@ func NewZhipuProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryC
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("zhipu", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}

@@ -15,6 +15,7 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
 
 const (
@@ -88,6 +89,10 @@ type CloudflareStreamResponse struct {
 	Done     bool   `json:"done"`
 }
 
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP client.
+// Override with LLMPROVIDER_CLOUDFLARE_TIMEOUT (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
+
 func DefaultRetryConfig() RetryConfig {
 	return RetryConfig{
 		MaxRetries:   3,
@@ -106,15 +111,20 @@ func NewCloudflareProviderWithRetry(apiKey, accountID, baseURL, model string, re
 		accountID = os.Getenv("CLOUDFLARE_ACCOUNT_ID")
 	}
 	if model == "" {
-		model = CloudflareModel
+		// The compiled constant is a FALLBACK, not a decision this
+		// library gets to keep making. A vendor retiring or rate-capping
+		// a model must be answerable with an environment variable, not a
+		// release. See pkg/settings: LLMPROVIDER_CLOUDFLARE_MODEL.
+		model = settings.Model("cloudflare", CloudflareModel)
 	}
 
 	p := &CloudflareProvider{
-		apiKey:      apiKey,
-		accountID:   accountID,
-		baseURL:     baseURL,
-		model:       model,
-		httpClient:  &http.Client{Timeout: 120 * time.Second},
+		apiKey:    apiKey,
+		accountID: accountID,
+		baseURL:   baseURL,
+		model:     model,
+		// LLMPROVIDER_CLOUDFLARE_TIMEOUT.
+		httpClient:  &http.Client{Timeout: settings.Timeout("cloudflare", DefaultHTTPTimeout)},
 		retryConfig: retryConfig,
 	}
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -251,14 +252,80 @@ func TestCompleteStreamError(t *testing.T) {
 	assert.Contains(t, err.Error(), "503")
 }
 
+// modelsFixture serves an OpenAI-compatible /models response, which is the
+// shape pkg/discovery parses when no custom ResponseParser is configured. The
+// returned URL is a chat-completions base URL, so the provider derives its
+// models endpoint from it exactly as it does in production.
+func modelsFixture(t *testing.T, ids ...string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/models") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// The adapter must authenticate discovery, not just completions.
+		assert.Equal(t, "Bearer test-api-key", r.Header.Get("Authorization"))
+		data := make([]map[string]any, 0, len(ids))
+		for _, id := range ids {
+			data = append(data, map[string]any{"id": id, "object": "model"})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestGetCapabilities pins the ADAPTER'S BEHAVIOUR against a controlled
+// fixture.
+//
+// It used to construct a provider with a synthetic key and assert
+// `len(SupportedModels) >= 1` against LIVE discovery. That is not a unit test:
+// it asserts that a third party is up and that whoever runs it holds a valid
+// AI21 credential, so it fails on any machine without both — which is how it
+// was found, red on a pristine checkout. Worse, the thing it demanded is the
+// OPPOSITE of the documented contract: pkg/discovery returns nil when live
+// discovery is unreachable (CONST-036, no hardcoded fallback), so the old
+// assertion required a correct implementation to fail.
+// SYNTHETIC fixture model ids. They were real vendor ids ("jamba-1.5-large",
+// "text-embedding-ada-002"), which made this fixture a frozen environment
+// assumption in its own right: a test that names a live vendor's catalogue has
+// the same defect as the code it tests, one layer out, and it went on to be
+// reported by scripts/audit-environment-assumptions.sh.
+//
+// Only ONE property of these strings is load-bearing, and it is preserved: the
+// chat filter in pkg/discovery rejects any id containing "embedding", so
+// fixtureEmbedding must contain that substring and the other two must not.
+// Nothing else about the real ids mattered to this test.
+const (
+	fixtureChatA = "synthetic-chat-a"
+	fixtureChatB = "synthetic-chat-b"
+	// NOTE the spelling: "synthetic-embedding-a", NOT
+	// "synthetic-text-embedding-a". The latter contains the literal
+	// "text-embedding-", which scripts/audit-environment-assumptions.sh
+	// classifies as a real model id -- and it reported this line. A fixture
+	// only has to satisfy the filter under test, which keys on "embedding";
+	// borrowing a real vendor's naming convention on top of that is how a
+	// fixture becomes the next finding.
+	fixtureEmbedding = "synthetic-embedding-a"
+)
+
 func TestGetCapabilities(t *testing.T) {
-	provider := NewProvider("test-api-key", "", "")
+	srv := modelsFixture(t, fixtureChatA, fixtureChatB, fixtureEmbedding)
+	provider := NewProvider("test-api-key", srv.URL+"/studio/v1/chat/completions", "")
+
 	caps := provider.GetCapabilities()
 
 	require.NotNil(t, caps)
-	// Dynamic model discovery fetches current models from AI21 API
-	// Use minimum count check instead of specific models (API models change over time)
-	assert.GreaterOrEqual(t, len(caps.SupportedModels), 1)
+	// Discovery reached the fixture and its result was plumbed into the
+	// capabilities — the behaviour the old assertion was reaching for.
+	assert.Contains(t, caps.SupportedModels, fixtureChatA)
+	assert.Contains(t, caps.SupportedModels, fixtureChatB)
+	// And the chat-model filter still applies to whatever the endpoint returns.
+	assert.NotContains(t, caps.SupportedModels, fixtureEmbedding)
+
+	// The static half of the capability record, which was always deterministic
+	// and never needed a network at all.
 	assert.Contains(t, caps.SupportedFeatures, "chat")
 	assert.Contains(t, caps.SupportedFeatures, "streaming")
 	assert.Contains(t, caps.SupportedFeatures, "tools")
@@ -267,6 +334,71 @@ func TestGetCapabilities(t *testing.T) {
 	assert.True(t, caps.SupportsFunctionCalling)
 	assert.Equal(t, 256000, caps.Limits.MaxTokens)
 	assert.Equal(t, "ai21", caps.Metadata["provider"])
+}
+
+// TestGetCapabilitiesDiscoveryUnavailable is the honest-unavailability half.
+//
+// When discovery cannot answer, SupportedModels MUST be empty — never the
+// deprecated FallbackModels catalogue this provider still passes to the
+// discoverer. Serving that list would hand a caller model IDs it may not be
+// able to invoke, which CONST-036 calls a structural bluff. The names are
+// asserted individually because "empty" alone would also pass if the list
+// leaked through under a different key.
+func TestGetCapabilitiesDiscoveryUnavailable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	provider := NewProvider("test-api-key", srv.URL+"/studio/v1/chat/completions", "")
+	caps := provider.GetCapabilities()
+
+	require.NotNil(t, caps)
+	assert.Empty(t, caps.SupportedModels,
+		"unreachable discovery must report NO models, not a stale hardcoded catalogue (CONST-036)")
+	for _, fallback := range []string{"jamba-1.5-large", "jamba-instruct", "j2-ultra"} {
+		assert.NotContains(t, caps.SupportedModels, fallback,
+			"the deprecated FallbackModels list must never reach a caller")
+	}
+	// The rest of the record is still served: unavailable models do not make
+	// the provider's fixed capabilities unknown.
+	assert.True(t, caps.SupportsStreaming)
+	assert.Equal(t, "ai21", caps.Metadata["provider"])
+}
+
+// TestModelsURLMatchesConstant guards the refactor that made the discovery
+// endpoint config-injectable: with the DEFAULT base URL it must still resolve
+// to the production constant, byte for byte. Without this, deriving the
+// endpoint could silently change where production traffic goes.
+func TestModelsURLMatchesConstant(t *testing.T) {
+	assert.Equal(t, AI21ModelsURL, NewProvider("k", "", "").modelsURL())
+}
+
+// TestGetCapabilitiesLiveDiscovery is the live probe, kept but made OPT-IN.
+//
+// It is genuinely useful — it is the only thing here that would notice AI21
+// changing its models endpoint — but it depends on a third party and a real
+// credential, so it must never be part of the default suite. It SKIPS with a
+// stated reason rather than failing, because "nobody exported a key" is not a
+// defect in this adapter.
+//
+//	AI21_LIVE_DISCOVERY_TEST=1 AI21_API_KEY=<real key> go test ./pkg/providers/ai21/
+func TestGetCapabilitiesLiveDiscovery(t *testing.T) {
+	if os.Getenv("AI21_LIVE_DISCOVERY_TEST") == "" {
+		t.Skip("live discovery probe is opt-in: set AI21_LIVE_DISCOVERY_TEST=1 " + // SKIP-OK: #opt-in-live-probe
+			"together with a real AI21_API_KEY to run it")
+	}
+	apiKey := os.Getenv("AI21_API_KEY")
+	if apiKey == "" {
+		t.Skip("AI21_LIVE_DISCOVERY_TEST is set but AI21_API_KEY is empty; a live " + // SKIP-OK: #opt-in-live-probe
+			"probe without a credential would measure the credential, not the adapter")
+	}
+
+	caps := NewProvider(apiKey, "", "").GetCapabilities()
+	require.NotNil(t, caps)
+	assert.NotEmpty(t, caps.SupportedModels,
+		"live discovery with a real credential returned no models — either the "+
+			"AI21 models endpoint moved or the credential is not valid")
 }
 
 func TestValidateConfig(t *testing.T) {

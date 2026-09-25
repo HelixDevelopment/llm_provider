@@ -15,7 +15,13 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_VULAVULA_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
 
 const (
 	VulavulaAPIURL     = "https://api.vulavula.ai/v1/chat/completions"
@@ -113,10 +119,13 @@ func NewVulavulaProvider(apiKey, baseURL, model string) *VulavulaProvider {
 
 func NewVulavulaProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *VulavulaProvider {
 	if baseURL == "" {
-		baseURL = VulavulaAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_VULAVULA_BASE_URL.
+		baseURL = settings.BaseURL("vulavula", VulavulaAPIURL)
 	}
 	if model == "" {
-		model = VulavulaModel
+		// LLMPROVIDER_VULAVULA_MODEL overrides this compiled fallback.
+		model = settings.Model("vulavula", VulavulaModel)
 	}
 
 	p := &VulavulaProvider{
@@ -124,7 +133,7 @@ func NewVulavulaProviderWithRetry(apiKey, baseURL, model string, retryConfig Ret
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("vulavula", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}

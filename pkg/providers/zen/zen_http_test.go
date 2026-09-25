@@ -3,13 +3,35 @@ package zen
 import (
 	"context"
 	"encoding/json"
-	"os/exec"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"digital.vasic.llmprovider/pkg/models"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// withOpenCodeOnPath replaces PATH with a directory this test owns, optionally
+// containing an executable named `opencode`, and returns that directory.
+//
+// The point is that the EXPECTED answer is then known independently of the
+// host. The tests below used to derive their expectation from the very
+// exec.LookPath call the functions under test wrap, which made them agree with
+// the implementation by construction: they could not fail in either
+// environment, on a machine with opencode or without it.
+func withOpenCodeOnPath(t *testing.T, present bool, mode os.FileMode) string {
+	t.Helper()
+	dir := t.TempDir()
+	if present {
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, "opencode"),
+			[]byte("#!/bin/sh\nexit 0\n"), mode))
+	}
+	t.Setenv("PATH", dir)
+	return dir
+}
 
 // TestZenHTTPProvider_DefaultConfig tests default configuration
 func TestZenHTTPProvider_DefaultConfig(t *testing.T) {
@@ -148,24 +170,34 @@ func TestZenHTTPProvider_IsServerRunning(t *testing.T) {
 	})
 }
 
-// TestIsZenHTTPAvailable tests the standalone availability function
+// TestIsZenHTTPAvailable drives the probe from a CONTROLLED PATH, so each case
+// has an expected answer that does not come from the implementation itself.
 func TestIsZenHTTPAvailable(t *testing.T) {
-	available := IsZenHTTPAvailable()
-	t.Logf("Zen HTTP available: %v", available)
+	t.Run("absent from PATH", func(t *testing.T) {
+		withOpenCodeOnPath(t, false, 0o700)
+		assert.False(t, IsZenHTTPAvailable(),
+			"no opencode on PATH must report unavailable")
+		assert.False(t, CanUseZenHTTP(),
+			"CanUseZenHTTP must follow IsZenHTTPAvailable")
+		assert.False(t, IsOpenCodeInstalled(),
+			"IsOpenCodeInstalled must answer the same question")
+	})
 
-	// Should be consistent with LookPath
-	_, err := exec.LookPath("opencode")
-	expectedAvailable := err == nil
-	assert.Equal(t, expectedAvailable, available)
-}
+	t.Run("present on PATH", func(t *testing.T) {
+		withOpenCodeOnPath(t, true, 0o700)
+		assert.True(t, IsZenHTTPAvailable(),
+			"an executable opencode on PATH must report available")
+		assert.True(t, CanUseZenHTTP(),
+			"CanUseZenHTTP must follow IsZenHTTPAvailable")
+		assert.True(t, IsOpenCodeInstalled(),
+			"IsOpenCodeInstalled must answer the same question")
+	})
 
-// TestCanUseZenHTTP tests the full HTTP usability check
-func TestCanUseZenHTTP(t *testing.T) {
-	canUse := CanUseZenHTTP()
-	t.Logf("Can use Zen HTTP: %v", canUse)
-
-	// Should be same as IsZenHTTPAvailable
-	assert.Equal(t, IsZenHTTPAvailable(), canUse)
+	t.Run("present but not executable", func(t *testing.T) {
+		withOpenCodeOnPath(t, true, 0o600)
+		assert.False(t, IsZenHTTPAvailable(),
+			"a non-executable file named opencode is not an installation")
+	})
 }
 
 // TestZenHTTPProvider_APITypes tests API type structures
@@ -310,11 +342,32 @@ func TestZenHTTPProvider_ModelSupportViaCapabilities(t *testing.T) {
 	}
 }
 
+// EnvZenHTTPIntegration opts a run in to the two tests below that send a real
+// prompt to a live OpenCode server and therefore reach a real model.
+//
+// This gate exists because IsOpenCodeInstalled() was fixed. While it was a
+// hardcoded false these tests were dead everywhere; making it truthful woke
+// them up, and on this host -- which has both the CLI and a server on :4096 --
+// `go test ./...` began issuing real model calls with no opt-in at all. The
+// unit suite has no business doing that. Un-darkening a test must not turn it
+// into an unannounced live probe.
+const EnvZenHTTPIntegration = "LLMPROVIDER_ZEN_HTTP_INTEGRATION"
+
+// requireZenHTTPIntegration skips unless the CLI is present AND the caller has
+// explicitly asked for live-server tests.
+func requireZenHTTPIntegration(t *testing.T) {
+	t.Helper()
+	if !IsOpenCodeInstalled() {
+		t.Skip("opencode CLI is not on PATH") // SKIP-OK: #env
+	}
+	if os.Getenv(EnvZenHTTPIntegration) == "" {
+		t.Skip("set " + EnvZenHTTPIntegration + "=1 to run live OpenCode server tests") // SKIP-OK: #integration-mode-only
+	}
+}
+
 // Integration test - only runs if OpenCode is installed and server is running
 func TestZenHTTPProvider_Integration_Complete(t *testing.T) {
-	if !IsOpenCodeInstalled() {
-		t.Skip("OpenCode CLI not installed") // SKIP-OK: #legacy-untriaged
-	}
+	requireZenHTTPIntegration(t)
 
 	provider := NewZenHTTPProviderWithModel("big-pickle")
 
@@ -330,47 +383,90 @@ func TestZenHTTPProvider_Integration_Complete(t *testing.T) {
 		Prompt: "Reply with exactly one word: hello",
 	})
 
-	if err != nil {
-		t.Logf("Integration test failed: %v", err)
-		t.Skip("Skipping due to error") // SKIP-OK: #legacy-untriaged
-	}
+	// This used to turn any error into t.Skip, so the test could report
+	// "skipped" but never "failed" -- a live probe that cannot fail is not a
+	// probe. The caller has explicitly opted in to reaching a live server, so
+	// an error here is a result, not a reason to look away.
+	require.NoError(t, err, "opted-in live completion must succeed")
 
-	assert.NotNil(t, resp)
+	require.NotNil(t, resp)
 	assert.NotEmpty(t, resp.Content)
 	assert.Equal(t, "zen-http", resp.ProviderName)
 	t.Logf("Response: %s", resp.Content)
 	t.Logf("Session ID: %s", resp.Metadata["session_id"])
 }
 
-// Integration test for health check
+// TestZenHTTPProvider_HealthCheckNoServer asserts the other half of
+// HealthCheck's contract on EVERY host, not just on one that happens to have
+// no server running.
+//
+// It exists because a mutation proved the gap: replacing HealthCheck's
+// "not running" error with `return nil` was NOT caught by
+// TestZenHTTPProvider_Integration_HealthCheck, because this host has an
+// OpenCode server on :4096 and that test therefore only ever took the
+// server-is-running branch. A test whose reachable branch depends on the host
+// asserts nothing about the other one. Pointing at a closed port makes the
+// no-server case constructible anywhere, with no CLI and no skip.
+func TestZenHTTPProvider_HealthCheckNoServer(t *testing.T) {
+	config := DefaultZenHTTPConfig()
+	config.BaseURL = "http://127.0.0.1:1"
+	config.AutoStart = false
+	provider := NewZenHTTPProvider(config)
+
+	require.False(t, provider.IsServerRunning(),
+		"a closed port must not look like a running server")
+
+	err := provider.HealthCheck()
+	require.Error(t, err,
+		"HealthCheck must fail when no server is running and AutoStart is off")
+	assert.Contains(t, err.Error(), "not running")
+}
+
+// TestZenHTTPProvider_Integration_HealthCheck asserts HealthCheck's contract
+// against whatever server state the host is in.
+//
+// Two things were wrong here. It asserted NOTHING -- both branches were a
+// t.Log, so it was a verdict with no content. And it built its provider from
+// the default config, whose AutoStart is true: HealthCheck() spawns
+// `opencode serve` when no server is running, so once IsOpenCodeInstalled()
+// started answering truthfully this test would have LAUNCHED A DAEMON as a
+// side effect of `go test ./...`. AutoStart is therefore disabled explicitly:
+// this test observes the server, it never creates one.
 func TestZenHTTPProvider_Integration_HealthCheck(t *testing.T) {
 	if !IsOpenCodeInstalled() {
-		t.Skip("OpenCode CLI not installed") // SKIP-OK: #legacy-untriaged
+		t.Skip("opencode CLI is not on PATH") // SKIP-OK: #env
 	}
 
-	provider := NewZenHTTPProviderWithModel("big-pickle")
+	config := DefaultZenHTTPConfig()
+	config.Model = "big-pickle"
+	config.AutoStart = false
+	provider := NewZenHTTPProvider(config)
 
-	// If server not running and auto-start enabled, it might start
+	// With AutoStart off the contract is exact: HealthCheck succeeds if and
+	// only if a server is already running. (Both branches probe the same
+	// endpoint moments apart; a server that stops between the two calls would
+	// be a genuine environment change, not a masked defect.)
+	running := provider.IsServerRunning()
 	err := provider.HealthCheck()
 
-	if err != nil {
-		t.Logf("Health check failed (may be expected if server not running): %v", err)
-		// Not failing the test - server might not be running
-	} else {
-		t.Log("Health check passed - server is running")
+	if running {
+		assert.NoError(t, err,
+			"HealthCheck must succeed while the server is running")
+		return
 	}
+	require.Error(t, err,
+		"HealthCheck must report an error when no server is running and AutoStart is off")
+	assert.Contains(t, err.Error(), "not running")
 }
 
 // TestZenHTTPProvider_CompleteStream tests streaming completion
 func TestZenHTTPProvider_CompleteStream(t *testing.T) {
-	if !IsOpenCodeInstalled() {
-		t.Skip("OpenCode CLI not installed") // SKIP-OK: #legacy-untriaged
-	}
+	requireZenHTTPIntegration(t)
 
 	provider := NewZenHTTPProviderWithModel("big-pickle")
 
 	if !provider.IsServerRunning() {
-		t.Skip("Server not running - skipping streaming test") // SKIP-OK: #legacy-untriaged
+		t.Skip("no OpenCode server is running at the configured base URL") // SKIP-OK: #integration-mode-only
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -380,12 +476,10 @@ func TestZenHTTPProvider_CompleteStream(t *testing.T) {
 		Prompt: "Say hello",
 	})
 
-	if err != nil {
-		t.Logf("Stream test failed: %v", err)
-		t.Skip("Streaming test skipped due to error") // SKIP-OK: #legacy-untriaged
-	}
+	// As above: an error used to become a skip, so this test could not fail.
+	require.NoError(t, err, "opted-in live streaming must succeed")
 
-	assert.NotNil(t, ch)
+	require.NotNil(t, ch)
 
 	// Read from channel
 	for resp := range ch {
@@ -427,15 +521,26 @@ func TestZenHTTPProvider_BasicAuthCredentials(t *testing.T) {
 }
 
 // TestZenHTTPProvider_StartServerWithoutCLI tests server start failure when CLI missing
+// TestZenHTTPProvider_StartServerWithoutCLI no longer skips on a host that HAS
+// opencode -- it constructs the missing-CLI scenario instead of waiting for a
+// host that happens to be in it. PATH is emptied so LookPath must fail, and the
+// base URL points at a closed port so StartServer's own "is it already
+// running?" short-circuit cannot return nil ahead of the LookPath check.
 func TestZenHTTPProvider_StartServerWithoutCLI(t *testing.T) {
-	if IsZenHTTPAvailable() {
-		t.Skip("OpenCode is installed - can't test missing CLI scenario") // SKIP-OK: #legacy-untriaged
-	}
+	withOpenCodeOnPath(t, false, 0o700)
 
-	provider := NewZenHTTPProviderWithModel("big-pickle")
+	config := DefaultZenHTTPConfig()
+	config.Model = "big-pickle"
+	config.BaseURL = "http://127.0.0.1:1"
+	config.AutoStart = false
+	provider := NewZenHTTPProvider(config)
+
+	require.False(t, provider.IsServerRunning(),
+		"the closed-port base URL must make the running-server short-circuit false")
+
 	err := provider.StartServer()
 
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
 

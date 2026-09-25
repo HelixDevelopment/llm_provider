@@ -15,7 +15,13 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_HUGGINGFACE_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
 
 const (
 	// HuggingFaceInferenceURL is the base URL for HuggingFace Inference API (legacy)
@@ -153,13 +159,16 @@ func NewProvider(apiKey, baseURL, model string) *Provider {
 func NewProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *Provider {
 	usePro := false
 	if baseURL == "" {
-		baseURL = HuggingFaceProURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_HUGGINGFACE_BASE_URL.
+		baseURL = settings.BaseURL("huggingface", HuggingFaceProURL)
 		usePro = true
 	} else if strings.Contains(baseURL, "chat/completions") {
 		usePro = true
 	}
 	if model == "" {
-		model = DefaultModel
+		// LLMPROVIDER_HUGGINGFACE_MODEL overrides this compiled fallback.
+		model = settings.Model("huggingface", DefaultModel)
 	}
 
 	p := &Provider{
@@ -167,7 +176,7 @@ func NewProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("huggingface", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 		usePro:      usePro,

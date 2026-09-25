@@ -15,7 +15,13 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_SAMBANOVA_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
 
 // modelsURL derives the /models endpoint from the configured baseURL so
 // health checks honor operator overrides (proxies, mirrors, httptest in
@@ -120,10 +126,13 @@ func NewSambaNovaProvider(apiKey, baseURL, model string) *SambaNovaProvider {
 
 func NewSambaNovaProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *SambaNovaProvider {
 	if baseURL == "" {
-		baseURL = SambaNovaAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_SAMBANOVA_BASE_URL.
+		baseURL = settings.BaseURL("sambanova", SambaNovaAPIURL)
 	}
 	if model == "" {
-		model = SambaNovaModel
+		// LLMPROVIDER_SAMBANOVA_MODEL overrides this compiled fallback.
+		model = settings.Model("sambanova", SambaNovaModel)
 	}
 
 	p := &SambaNovaProvider{
@@ -131,14 +140,26 @@ func NewSambaNovaProviderWithRetry(apiKey, baseURL, model string, retryConfig Re
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("sambanova", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}
 
+	// ModelsEndpoint is DERIVED from the configured base URL, not pinned to the
+	// production constant — the same CONST-051(B) config-injection fix already
+	// applied to HealthCheck via modelsURL() at the top of this file. Pinning it
+	// meant a caller could point this provider at a mirror, a proxy or a test
+	// double for completions while discovery silently kept talking to
+	// api.sambanova.ai, which is both a surprise in production and the reason
+	// TestGetCapabilities could only ever be an availability probe: no fixture
+	// could reach the code path.
+	//
+	// Production behaviour is unchanged. With the default base URL this
+	// evaluates to exactly SambaNovaModelsURL, and TestModelsURLMatchesConstant
+	// asserts that equality rather than leaving it to inspection.
 	p.discoverer = discovery.NewDiscoverer(discovery.ProviderConfig{
 		ProviderName:   "sambanova",
-		ModelsEndpoint: SambaNovaModelsURL,
+		ModelsEndpoint: p.modelsURL(),
 		ModelsDevID:    "sambanova",
 		APIKey:         apiKey,
 		FallbackModels: []string{

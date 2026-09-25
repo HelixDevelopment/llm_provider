@@ -15,7 +15,13 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_NOVITA_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
 
 const (
 	NovitaAPIURL     = "https://api.novita.ai/v3/openai/chat/completions"
@@ -113,10 +119,16 @@ func NewNovitaProvider(apiKey, baseURL, model string) *NovitaProvider {
 
 func NewNovitaProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *NovitaProvider {
 	if baseURL == "" {
-		baseURL = NovitaAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_NOVITA_BASE_URL.
+		baseURL = settings.BaseURL("novita", NovitaAPIURL)
 	}
 	if model == "" {
-		model = NovitaModel
+		// The compiled constant is a FALLBACK, not a decision this
+		// library gets to keep making. A vendor retiring or rate-capping
+		// a model must be answerable with an environment variable, not a
+		// release. See pkg/settings: LLMPROVIDER_NOVITA_MODEL.
+		model = settings.Model("novita", NovitaModel)
 	}
 
 	p := &NovitaProvider{
@@ -124,14 +136,26 @@ func NewNovitaProviderWithRetry(apiKey, baseURL, model string, retryConfig Retry
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("novita", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}
 
+	// ModelsEndpoint is DERIVED from the configured base URL, not pinned to the
+	// production constant — the same CONST-051(B) config-injection fix already
+	// applied to HealthCheck via modelsURL() at the bottom of this file. Pinning
+	// it meant a caller could point this provider at a mirror, a proxy or a test
+	// double for completions while discovery silently kept talking to
+	// api.novita.ai, which is both a surprise in production and the reason
+	// TestGetCapabilities could only ever be an availability probe: no fixture
+	// could reach the code path.
+	//
+	// Production behaviour is unchanged. With the default base URL this
+	// evaluates to exactly NovitaModelsURL, and TestModelsURLMatchesConstant
+	// asserts that equality rather than leaving it to inspection.
 	p.discoverer = discovery.NewDiscoverer(discovery.ProviderConfig{
 		ProviderName:   "novita",
-		ModelsEndpoint: NovitaModelsURL,
+		ModelsEndpoint: p.modelsURL(),
 		ModelsDevID:    "novita",
 		APIKey:         apiKey,
 		FallbackModels: []string{

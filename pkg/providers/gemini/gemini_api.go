@@ -15,7 +15,14 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this transport's HTTP client.
+// It is deliberately NOT DefaultUnifiedTimeout (180s, declared in gemini.go):
+// a plain HTTPS round trip and a CLI/ACP sub-provider round trip are not the
+// same wait. Override with LLMPROVIDER_GEMINI_TIMEOUT.
+const DefaultHTTPTimeout = 120 * time.Second
 
 const (
 	// GeminiDefaultModel is the default model for the Gemini API provider.
@@ -108,10 +115,12 @@ func NewGeminiAPIProviderWithRetry(
 	retryConfig RetryConfig,
 ) *GeminiAPIProvider {
 	if baseURL == "" {
-		baseURL = GeminiAPIURL
+		// LLMPROVIDER_GEMINI_BASE_URL.
+		baseURL = settings.BaseURL(SettingsProvider, GeminiAPIURL)
 	}
 	if model == "" {
-		model = GeminiDefaultModel
+		// LLMPROVIDER_GEMINI_MODEL.
+		model = settings.Model(SettingsProvider, GeminiDefaultModel)
 	}
 
 	// Derive streaming URL from base URL
@@ -133,7 +142,8 @@ func NewGeminiAPIProviderWithRetry(
 		streamURL: streamURL,
 		model:     model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			// LLMPROVIDER_GEMINI_TIMEOUT.
+			Timeout: settings.Timeout(SettingsProvider, DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}
@@ -783,14 +793,24 @@ func (p *GeminiAPIProvider) waitWithJitter(
 	ctx context.Context,
 	delay time.Duration,
 ) {
-	// Add 10% jitter - using math/rand is acceptable for non-security jitter
-	jitter := time.Duration(
-		rand.Float64() * 0.1 * float64(delay), // #nosec G404
-	)
 	select {
 	case <-ctx.Done():
-	case <-time.After(delay + jitter):
+	case <-time.After(jitteredDelay(delay)):
 	}
+}
+
+// jitteredDelay returns delay plus up to 10% random jitter -- the exact
+// duration waitWithJitter arms its timer with.
+//
+// Extracted so that the "at most 10% over" bound can be asserted directly and
+// deterministically. Asserting it through wall-clock elapsed time does not
+// work: elapsed time also contains scheduler latency the host controls, so a
+// wall-clock ceiling measures the machine at least as much as it measures this
+// package, and fails on a busy host while the code is correct.
+func jitteredDelay(delay time.Duration) time.Duration {
+	// Add 10% jitter - using math/rand is acceptable for non-security jitter
+	jitter := time.Duration(rand.Float64() * 0.1 * float64(delay)) // #nosec G404
+	return delay + jitter
 }
 
 // nextDelay calculates the next delay using exponential backoff capped at
@@ -884,7 +904,9 @@ func (p *GeminiAPIProvider) HealthCheck() error {
 
 	healthURL := p.healthURL
 	if healthURL == "" {
-		healthURL = "https://generativelanguage.googleapis.com/v1beta/models"
+		// LLMPROVIDER_GEMINI_MODELS_BASE_URL — keyed apart from the
+		// generateContent endpoint; see SettingsProviderModels in gemini.go.
+		healthURL = settings.BaseURL(SettingsProviderModels, GeminiModelsURL)
 	}
 
 	req, err := http.NewRequestWithContext(

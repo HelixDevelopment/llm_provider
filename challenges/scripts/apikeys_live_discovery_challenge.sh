@@ -13,9 +13,20 @@
 #   3. Assert the returned model list is NON-EMPTY (real-stack positive
 #      evidence) and contains at least one model whose ID is not the empty
 #      string.
-#   4. On failure: print the captured error + exit non-zero. No silent skip
-#      unless the operator explicitly has no key set at all (in which case
-#      we report SKIP-OK: #env-no-api-keys, never PASS-on-absence).
+#   4. On failure: print the captured error + exit non-zero.
+#
+# ── EXIT CODES — three-valued, and 2 is NEVER a pass ─────────────────────────
+#   0  live discovery ran against a real endpoint and returned a non-empty
+#      model list
+#   1  a real finding: credentials were present and the live probe failed
+#   2  COULD NOT DETERMINE — no credential file, or no key for the probe
+#      provider. NOTHING was exercised, so the apikeys + discovery wiring is
+#      NOT known to work.
+#
+# The header above used to promise "never PASS-on-absence", and then both
+# absence branches did exactly that: they printed SKIP-OK and `exit 0`. A caller
+# reading the exit status could not tell "discovery works" from "there were no
+# credentials to try it with". They now exit 2.
 #
 # Run from LLMProvider repo root:
 #   bash challenges/scripts/apikeys_live_discovery_challenge.sh
@@ -30,8 +41,10 @@ cd "$REPO_ROOT"
 
 API_KEYS_FILE="${API_KEYS_FILE:-$HOME/api_keys.sh}"
 if [[ ! -r "$API_KEYS_FILE" ]]; then
-  echo "SKIP-OK: #env-no-api-keys-file — $API_KEYS_FILE not readable; cannot exercise live discovery without operator credentials."
-  exit 0
+  echo "COULD NOT DETERMINE: #env-no-api-keys-file — $API_KEYS_FILE not readable;"
+  echo "  cannot exercise live discovery without operator credentials. NOTHING was"
+  echo "  measured: the apikeys + discovery wiring is NOT known to work."
+  exit 2
 fi
 
 # shellcheck source=/dev/null
@@ -46,8 +59,10 @@ PROBE_PROVIDER="${PROBE_PROVIDER:-HuggingFace}"
 PROBE_VAR="ApiKey_${PROBE_PROVIDER}"
 PROBE_VALUE="${!PROBE_VAR-}"
 if [[ -z "$PROBE_VALUE" ]]; then
-  echo "SKIP-OK: #env-no-${PROBE_PROVIDER}-key — operator has no ${PROBE_VAR} exported in ${API_KEYS_FILE}."
-  exit 0
+  echo "COULD NOT DETERMINE: #env-no-${PROBE_PROVIDER}-key — operator has no"
+  echo "  ${PROBE_VAR} exported in ${API_KEYS_FILE}. NOTHING was measured: the"
+  echo "  apikeys + discovery wiring is NOT known to work."
+  exit 2
 fi
 
 # Spin up a one-shot Go probe that uses the real pkg/apikeys + pkg/discovery

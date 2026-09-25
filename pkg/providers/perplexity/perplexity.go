@@ -15,7 +15,13 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_PERPLEXITY_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
 
 const (
 	// PerplexityAPIURL is the base URL for Perplexity API
@@ -126,10 +132,13 @@ func NewProvider(apiKey, baseURL, model string) *Provider {
 // NewProviderWithRetry creates a new Perplexity provider with custom retry config
 func NewProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *Provider {
 	if baseURL == "" {
-		baseURL = PerplexityAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_PERPLEXITY_BASE_URL.
+		baseURL = settings.BaseURL("perplexity", PerplexityAPIURL)
 	}
 	if model == "" {
-		model = DefaultModel
+		// LLMPROVIDER_PERPLEXITY_MODEL overrides this compiled fallback.
+		model = settings.Model("perplexity", DefaultModel)
 	}
 
 	p := &Provider{
@@ -137,7 +146,7 @@ func NewProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("perplexity", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}

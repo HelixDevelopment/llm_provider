@@ -15,7 +15,39 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// Settings keys, and the compiled fallbacks behind them.
+//
+// The two auth paths do NOT talk to the same endpoint — the API-key path posts
+// to DashScope's native API, the OAuth path to its OpenAI-compatible shim — so
+// they get two BASE_URL keys. Sharing one would mean an operator redirecting
+// their OAuth traffic would silently redirect API-key traffic to a path that
+// speaks a different wire format. The MODEL is genuinely shared, so it stays on
+// one key.
+const (
+	// SettingsProvider keys the API-key endpoint, the shared model and the
+	// shared timeout: LLMPROVIDER_QWEN_BASE_URL, LLMPROVIDER_QWEN_MODEL,
+	// LLMPROVIDER_QWEN_TIMEOUT.
+	SettingsProvider = "qwen"
+	// SettingsProviderOAuth keys the OAuth endpoint:
+	// LLMPROVIDER_QWEN_OAUTH_BASE_URL.
+	SettingsProviderOAuth = "qwen_oauth"
+
+	// QwenAPIURL is DashScope's native API, used with an API key.
+	QwenAPIURL = "https://dashscope.aliyuncs.com/api/v1"
+	// QwenOAuthAPIURL is DashScope's OpenAI-compatible shim, which is what the
+	// Qwen Code CLI's OAuth tokens are accepted against.
+	QwenOAuthAPIURL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+	// QwenModel is the compiled fallback model for both transports.
+	QwenModel = "qwen-turbo"
+)
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP client.
+// It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_QWEN_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 60 * time.Second
 
 // AuthType represents the type of authentication used
 type AuthType string
@@ -171,10 +203,12 @@ func NewQwenProvider(apiKey, baseURL, model string) *QwenProvider {
 // NewQwenProviderWithRetry creates a new Qwen provider instance with custom retry config
 func NewQwenProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *QwenProvider {
 	if baseURL == "" {
-		baseURL = "https://dashscope.aliyuncs.com/api/v1"
+		// LLMPROVIDER_QWEN_BASE_URL.
+		baseURL = settings.BaseURL(SettingsProvider, QwenAPIURL)
 	}
 	if model == "" {
-		model = "qwen-turbo"
+		// LLMPROVIDER_QWEN_MODEL — shared with the OAuth path by design.
+		model = settings.Model(SettingsProvider, QwenModel)
 	}
 
 	p := &QwenProvider{
@@ -182,7 +216,8 @@ func NewQwenProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryCo
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 60 * time.Second,
+			// LLMPROVIDER_QWEN_TIMEOUT.
+			Timeout: settings.Timeout(SettingsProvider, DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 		authType:    AuthTypeAPIKey,
@@ -213,10 +248,13 @@ func NewQwenProviderWithOAuth(baseURL, model string) (*QwenProvider, error) {
 func NewQwenProviderWithOAuthAndRetry(baseURL, model string, retryConfig RetryConfig) (*QwenProvider, error) {
 	// OAuth tokens from Qwen Code CLI work with the DashScope API
 	if baseURL == "" {
-		baseURL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+		// LLMPROVIDER_QWEN_OAUTH_BASE_URL — deliberately NOT the API-key path's
+		// key; see SettingsProviderOAuth.
+		baseURL = settings.BaseURL(SettingsProviderOAuth, QwenOAuthAPIURL)
 	}
 	if model == "" {
-		model = "qwen-turbo"
+		// LLMPROVIDER_QWEN_MODEL — shared with the API-key path by design.
+		model = settings.Model(SettingsProvider, QwenModel)
 	}
 
 	// OAuth not available in standalone module
@@ -231,7 +269,8 @@ func NewQwenProviderWithOAuthAndRetry(baseURL, model string, retryConfig RetryCo
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 60 * time.Second,
+			// LLMPROVIDER_QWEN_TIMEOUT.
+			Timeout: settings.Timeout(SettingsProvider, DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 		authType:    AuthTypeOAuth,
@@ -925,12 +964,24 @@ func isAuthRetryableStatus(statusCode int) bool {
 
 // waitWithJitter waits for the specified duration plus random jitter
 func (q *QwenProvider) waitWithJitter(ctx context.Context, delay time.Duration) {
-	// Add 10% jitter - using math/rand is acceptable for non-security jitter
-	jitter := time.Duration(rand.Float64() * 0.1 * float64(delay)) // #nosec G404 - jitter doesn't require cryptographic randomness
 	select {
 	case <-ctx.Done():
-	case <-time.After(delay + jitter):
+	case <-time.After(jitteredDelay(delay)):
 	}
+}
+
+// jitteredDelay returns delay plus up to 10% random jitter -- the exact
+// duration waitWithJitter arms its timer with.
+//
+// Extracted so that the "at most 10% over" bound can be asserted directly and
+// deterministically. Asserting it through wall-clock elapsed time does not
+// work: elapsed time also contains scheduler latency the host controls, so a
+// wall-clock ceiling measures the machine at least as much as it measures this
+// package, and fails on a busy host while the code is correct.
+func jitteredDelay(delay time.Duration) time.Duration {
+	// Add 10% jitter - using math/rand is acceptable for non-security jitter
+	jitter := time.Duration(rand.Float64() * 0.1 * float64(delay)) // #nosec G404
+	return delay + jitter
 }
 
 // nextDelay calculates the next delay using exponential backoff

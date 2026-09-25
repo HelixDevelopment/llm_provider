@@ -25,7 +25,15 @@ import (
 
 	// modelsdev import removed for standalone module
 	"github.com/sirupsen/logrus"
+
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultDiscoveryTimeout is the compiled fallback wait for a Tier-1 models
+// probe. Listing models is a cheap GET, so this is deliberately far shorter
+// than any completion timeout: a slow catalogue should fail fast rather than
+// stall the caller that asked for it.
+const DefaultDiscoveryTimeout = 15 * time.Second
 
 // ProviderConfig configures model discovery for a specific LLM provider.
 type ProviderConfig struct {
@@ -105,7 +113,12 @@ func NewDiscoverer(config ProviderConfig) *Discoverer {
 		config: config,
 		log:    logrus.StandardLogger(),
 		httpClient: &http.Client{
-			Timeout: 15 * time.Second,
+			// Keyed by the CALLER'S provider name, so a slow backend's
+			// discovery probe can be lengthened without lengthening every
+			// other backend's: LLMPROVIDER_<PROVIDER>_DISCOVERY_TIMEOUT is not
+			// a separate suffix — the key is "<provider>_discovery", giving
+			// e.g. LLMPROVIDER_OLLAMA_DISCOVERY_TIMEOUT.
+			Timeout: settings.Timeout(config.ProviderName+"_discovery", DefaultDiscoveryTimeout),
 		},
 	}
 }

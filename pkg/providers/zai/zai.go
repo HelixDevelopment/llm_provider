@@ -14,6 +14,7 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
 
 // RetryConfig defines retry behavior for API calls
@@ -183,12 +184,25 @@ func NewZAIProvider(apiKey, baseURL, model string) *ZAIProvider {
 }
 
 // NewZAIProviderWithRetry creates a new Z.AI provider instance with custom retry config
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP client.
+// Override with LLMPROVIDER_ZAI_TIMEOUT (see pkg/settings).
+const DefaultHTTPTimeout = 60 * time.Second
+
+// DefaultZAIModel is the model used when neither the caller nor the
+// environment names one. Previously an unnamed literal inside the
+// constructor, which made it invisible to anyone reading the package API.
+const DefaultZAIModel = "glm-4.5"
+
 func NewZAIProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *ZAIProvider {
 	if baseURL == "" {
-		baseURL = ZAIEndpointInternational
+		// FALLBACK, not a decision — LLMPROVIDER_ZAI_BASE_URL. An operator on
+		// the China endpoint should not need a code change to reach it.
+		baseURL = settings.BaseURL("zai", ZAIEndpointInternational)
 	}
 	if model == "" {
-		model = "glm-4.5"
+		// FALLBACK, not a decision — see pkg/settings.
+		// LLMPROVIDER_ZAI_MODEL overrides it without a release.
+		model = settings.Model("zai", DefaultZAIModel)
 	}
 
 	p := &ZAIProvider{
@@ -196,7 +210,8 @@ func NewZAIProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryCon
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout:   60 * time.Second,
+			// LLMPROVIDER_ZAI_TIMEOUT.
+			Timeout:   settings.Timeout("zai", DefaultHTTPTimeout),
 			Transport: newTunedTransport(),
 		},
 		// Streaming responses have no overall deadline, but they still

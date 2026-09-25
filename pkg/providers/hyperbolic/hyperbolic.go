@@ -15,7 +15,13 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_HYPERBOLIC_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
 
 // modelsURL derives the /models endpoint from the configured baseURL so
 // health checks honor operator overrides (proxies, mirrors, httptest in
@@ -120,10 +126,13 @@ func NewHyperbolicProvider(apiKey, baseURL, model string) *HyperbolicProvider {
 
 func NewHyperbolicProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *HyperbolicProvider {
 	if baseURL == "" {
-		baseURL = HyperbolicAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_HYPERBOLIC_BASE_URL.
+		baseURL = settings.BaseURL("hyperbolic", HyperbolicAPIURL)
 	}
 	if model == "" {
-		model = HyperbolicModel
+		// LLMPROVIDER_HYPERBOLIC_MODEL overrides this compiled fallback.
+		model = settings.Model("hyperbolic", HyperbolicModel)
 	}
 
 	p := &HyperbolicProvider{
@@ -131,7 +140,7 @@ func NewHyperbolicProviderWithRetry(apiKey, baseURL, model string, retryConfig R
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("hyperbolic", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}

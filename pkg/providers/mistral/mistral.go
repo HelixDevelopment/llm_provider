@@ -15,8 +15,14 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 	"github.com/sirupsen/logrus"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_MISTRAL_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
 
 var log = logrus.New()
 
@@ -145,10 +151,16 @@ func NewMistralProvider(apiKey, baseURL, model string) *MistralProvider {
 
 func NewMistralProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *MistralProvider {
 	if baseURL == "" {
-		baseURL = MistralAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_MISTRAL_BASE_URL.
+		baseURL = settings.BaseURL("mistral", MistralAPIURL)
 	}
 	if model == "" {
-		model = MistralModel
+		// The compiled constant is a FALLBACK, not a decision this
+		// library gets to keep making. A vendor retiring or rate-capping
+		// a model must be answerable with an environment variable, not a
+		// release. See pkg/settings: LLMPROVIDER_MISTRAL_MODEL.
+		model = settings.Model("mistral", MistralModel)
 	}
 
 	p := &MistralProvider{
@@ -156,7 +168,7 @@ func NewMistralProviderWithRetry(apiKey, baseURL, model string, retryConfig Retr
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("mistral", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}
@@ -686,12 +698,24 @@ func isAuthRetryableStatus(statusCode int) bool {
 
 // waitWithJitter waits for the specified duration plus random jitter
 func (p *MistralProvider) waitWithJitter(ctx context.Context, delay time.Duration) {
-	// Add 10% jitter - using math/rand is acceptable for non-security jitter
-	jitter := time.Duration(rand.Float64() * 0.1 * float64(delay)) // #nosec G404 - jitter doesn't require cryptographic randomness
 	select {
 	case <-ctx.Done():
-	case <-time.After(delay + jitter):
+	case <-time.After(jitteredDelay(delay)):
 	}
+}
+
+// jitteredDelay returns delay plus up to 10% random jitter -- the exact
+// duration waitWithJitter arms its timer with.
+//
+// Extracted so that the "at most 10% over" bound can be asserted directly and
+// deterministically. Asserting it through wall-clock elapsed time does not
+// work: elapsed time also contains scheduler latency the host controls, so a
+// wall-clock ceiling measures the machine at least as much as it measures this
+// package, and fails on a busy host while the code is correct.
+func jitteredDelay(delay time.Duration) time.Duration {
+	// Add 10% jitter - using math/rand is acceptable for non-security jitter
+	jitter := time.Duration(rand.Float64() * 0.1 * float64(delay)) // #nosec G404 - jitter doesn't require cryptographic randomness
+	return delay + jitter
 }
 
 // nextDelay calculates the next delay using exponential backoff

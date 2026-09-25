@@ -15,7 +15,13 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_NIA_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
 
 // modelsURL derives the /models endpoint from the configured baseURL so
 // health checks honor operator overrides (proxies, mirrors, httptest in
@@ -120,10 +126,13 @@ func NewNiaProvider(apiKey, baseURL, model string) *NiaProvider {
 
 func NewNiaProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *NiaProvider {
 	if baseURL == "" {
-		baseURL = NiaAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_NIA_BASE_URL.
+		baseURL = settings.BaseURL("nia", NiaAPIURL)
 	}
 	if model == "" {
-		model = NiaModel
+		// LLMPROVIDER_NIA_MODEL overrides this compiled fallback.
+		model = settings.Model("nia", NiaModel)
 	}
 
 	p := &NiaProvider{
@@ -131,7 +140,7 @@ func NewNiaProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryCon
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("nia", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}

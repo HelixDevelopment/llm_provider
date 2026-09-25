@@ -15,7 +15,13 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_VENICE_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
 
 const (
 	// VeniceAPIURL is the base URL for Venice AI chat completions
@@ -183,10 +189,13 @@ func NewProviderWithRetry(
 	retryConfig RetryConfig,
 ) *Provider {
 	if baseURL == "" {
-		baseURL = VeniceAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_VENICE_BASE_URL.
+		baseURL = settings.BaseURL("venice", VeniceAPIURL)
 	}
 	if model == "" {
-		model = VeniceDefault
+		// LLMPROVIDER_VENICE_MODEL overrides this compiled fallback.
+		model = settings.Model("venice", VeniceDefault)
 	}
 
 	modelsURL := VeniceModelsURL
@@ -202,7 +211,7 @@ func NewProviderWithRetry(
 		modelsURL: modelsURL,
 		model:     model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("venice", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}

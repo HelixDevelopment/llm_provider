@@ -15,7 +15,13 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_AI21_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 120 * time.Second
 
 const (
 	// AI21APIURL is the base URL for AI21 Studio API
@@ -157,10 +163,13 @@ func NewProvider(apiKey, baseURL, model string) *Provider {
 // NewProviderWithRetry creates a new AI21 provider with custom retry config
 func NewProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *Provider {
 	if baseURL == "" {
-		baseURL = AI21APIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_AI21_BASE_URL.
+		baseURL = settings.BaseURL("ai21", AI21APIURL)
 	}
 	if model == "" {
-		model = DefaultModel
+		// LLMPROVIDER_AI21_MODEL overrides this compiled fallback.
+		model = settings.Model("ai21", DefaultModel)
 	}
 
 	p := &Provider{
@@ -168,14 +177,25 @@ func NewProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: settings.Timeout("ai21", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}
 
+	// ModelsEndpoint is DERIVED from the configured base URL, not pinned to the
+	// production constant — the same CONST-051(B) config-injection fix already
+	// applied to HealthCheck via modelsURL() a few lines below. Pinning it meant
+	// a caller could point this provider at a test double or a proxy for
+	// completions while discovery silently kept talking to api.ai21.com, which
+	// is both a surprise in production and the reason TestGetCapabilities could
+	// only ever be an availability probe: no fixture could reach the code path.
+	//
+	// Production behaviour is unchanged. With the default base URL this
+	// evaluates to exactly AI21ModelsURL, and TestModelsURLMatchesConstant
+	// asserts that equality rather than leaving it to inspection.
 	p.discoverer = discovery.NewDiscoverer(discovery.ProviderConfig{
 		ProviderName:   "ai21",
-		ModelsEndpoint: AI21ModelsURL,
+		ModelsEndpoint: p.modelsURL(),
 		ModelsDevID:    "ai21",
 		APIKey:         apiKey,
 		FallbackModels: []string{

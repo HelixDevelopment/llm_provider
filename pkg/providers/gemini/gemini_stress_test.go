@@ -22,6 +22,34 @@ import (
 // All stress tests use httptest servers -- no real API calls.
 // ==============================================================================
 
+// origGOMAXPROCS is the process-wide GOMAXPROCS as it stood before any test in
+// this binary ran. Package-level vars are initialised before any test starts,
+// so this is the value every test is obliged to leave behind.
+var origGOMAXPROCS = runtime.GOMAXPROCS(0)
+
+// pinGOMAXPROCS sets GOMAXPROCS for the duration of one test and restores the
+// previous value when that test ends.
+//
+// GOMAXPROCS is PROCESS-global. The six stress tests below used to call
+// runtime.GOMAXPROCS(2) bare, with no restore anywhere in the module, so every
+// later test in this binary silently ran on 2 Ps -- and with -shuffle=on,
+// which tests those were changed from run to run.
+//
+// The restore is only meaningful if no other test is running concurrently:
+// with t.Parallel() all six resume together, each captures a "previous" value
+// another has already overwritten, and the last one to finish decides what the
+// process is left with. That is why the callers of this helper do NOT call
+// t.Parallel(). No assertion depends on cross-test parallelism -- each stress
+// test spawns its own goroutines internally, and that concurrency is
+// untouched. Guarded by TestGOMAXPROCS_RestoredByStressTests.
+func pinGOMAXPROCS(t *testing.T, n int) {
+	t.Helper()
+	prev := runtime.GOMAXPROCS(n)
+	t.Cleanup(func() {
+		runtime.GOMAXPROCS(prev)
+	})
+}
+
 // newMockGeminiServer creates an httptest server that returns a valid Gemini
 // response with the given text content. An atomic counter tracks the number of
 // requests served.
@@ -120,8 +148,7 @@ func newMockStreamServer(
 // TestGeminiAPI_ConcurrentRequests launches 10 concurrent Complete() calls
 // against an httptest server and verifies all succeed.
 func TestGeminiAPI_ConcurrentRequests(t *testing.T) {
-	runtime.GOMAXPROCS(2)
-	t.Parallel()
+	pinGOMAXPROCS(t, 2)
 
 	var requestCount int64
 	server := newMockGeminiServer("concurrent response", &requestCount)
@@ -180,8 +207,7 @@ func TestGeminiAPI_ConcurrentRequests(t *testing.T) {
 // TestGeminiAPI_ConcurrentStreaming launches 5 concurrent CompleteStream()
 // calls and verifies all streams complete without error.
 func TestGeminiAPI_ConcurrentStreaming(t *testing.T) {
-	runtime.GOMAXPROCS(2)
-	t.Parallel()
+	pinGOMAXPROCS(t, 2)
 
 	chunks := []string{"chunk1 ", "chunk2 ", "chunk3"}
 	var requestCount int64
@@ -256,8 +282,7 @@ func TestGeminiAPI_ConcurrentStreaming(t *testing.T) {
 // TestGeminiAPI_RapidHealthChecks performs 50 rapid health checks against an
 // httptest server to verify no resource leaks or panics under load.
 func TestGeminiAPI_RapidHealthChecks(t *testing.T) {
-	runtime.GOMAXPROCS(2)
-	t.Parallel()
+	pinGOMAXPROCS(t, 2)
 
 	var requestCount int64
 	server := httptest.NewServer(http.HandlerFunc(
@@ -304,8 +329,7 @@ func TestGeminiAPI_RapidHealthChecks(t *testing.T) {
 // sync.Once inside the provider should ensure initialization happens exactly
 // once.
 func TestGeminiUnified_ConcurrentInitialization(t *testing.T) {
-	runtime.GOMAXPROCS(2)
-	t.Parallel()
+	pinGOMAXPROCS(t, 2)
 
 	const concurrency = 20
 	var wg sync.WaitGroup
@@ -341,8 +365,7 @@ func TestGeminiUnified_ConcurrentInitialization(t *testing.T) {
 // TestGeminiAPI_SequentialRetries creates a server that returns 429 for the
 // first 2 requests and then returns 200, verifying retry logic under load.
 func TestGeminiAPI_SequentialRetries(t *testing.T) {
-	runtime.GOMAXPROCS(2)
-	t.Parallel()
+	pinGOMAXPROCS(t, 2)
 
 	var requestCount int64
 
@@ -415,8 +438,7 @@ func TestGeminiCLI_ConcurrentModelDiscovery(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping stress test in -short mode") // SKIP-OK: #short-mode
 	}
-	runtime.GOMAXPROCS(2)
-	t.Parallel()
+	pinGOMAXPROCS(t, 2)
 
 	const concurrency = 10
 	var wg sync.WaitGroup
@@ -446,4 +468,34 @@ func TestGeminiCLI_ConcurrentModelDiscovery(t *testing.T) {
 		assert.Equal(t, results[0], results[i],
 			"all goroutines should get the same model list")
 	}
+}
+
+// TestPinGOMAXPROCS_RestoresPreviousValue proves the restore directly and
+// independently of test ordering: it observes the process-global inside a
+// subtest that pinned it, and again after that subtest has ended.
+func TestPinGOMAXPROCS_RestoresPreviousValue(t *testing.T) {
+	before := runtime.GOMAXPROCS(0)
+	require.NotEqual(t, 2, before,
+		"this proof needs a starting value different from the pinned one")
+
+	t.Run("pinned", func(t *testing.T) {
+		pinGOMAXPROCS(t, 2)
+		require.Equal(t, 2, runtime.GOMAXPROCS(0),
+			"pinGOMAXPROCS must actually apply the requested value")
+	})
+
+	assert.Equal(t, before, runtime.GOMAXPROCS(0),
+		"pinGOMAXPROCS must restore the previous value when the test ends")
+}
+
+// TestZZ_GOMAXPROCSRestoredByStressTests is the binary-level guard for
+// pinGOMAXPROCS: it asserts the process-global is exactly as this binary found
+// it. It is a sequential test, so it never overlaps another test. It is
+// deliberately the LAST test in this file, so in go test's default source
+// order it runs after all six stress tests; under -shuffle=on it lands before,
+// between and after them across runs, and in every one of those positions it
+// can only pass if each stress test restored the value it changed.
+func TestZZ_GOMAXPROCSRestoredByStressTests(t *testing.T) {
+	assert.Equal(t, origGOMAXPROCS, runtime.GOMAXPROCS(0),
+		"GOMAXPROCS must be left exactly as this test binary found it")
 }

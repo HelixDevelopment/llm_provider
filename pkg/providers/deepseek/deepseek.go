@@ -15,7 +15,13 @@ import (
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_DEEPSEEK_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 60 * time.Second
 
 const (
 	DeepSeekAPIURL = "https://api.deepseek.com/v1/chat/completions"
@@ -134,10 +140,16 @@ func NewDeepSeekProvider(apiKey, baseURL, model string) *DeepSeekProvider {
 
 func NewDeepSeekProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *DeepSeekProvider {
 	if baseURL == "" {
-		baseURL = DeepSeekAPIURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_DEEPSEEK_BASE_URL.
+		baseURL = settings.BaseURL("deepseek", DeepSeekAPIURL)
 	}
 	if model == "" {
-		model = DeepSeekModel
+		// The compiled constant is a FALLBACK, not a decision this
+		// library gets to keep making. A vendor retiring or rate-capping
+		// a model must be answerable with an environment variable, not a
+		// release. See pkg/settings: LLMPROVIDER_DEEPSEEK_MODEL.
+		model = settings.Model("deepseek", DeepSeekModel)
 	}
 
 	p := &DeepSeekProvider{
@@ -145,7 +157,7 @@ func NewDeepSeekProviderWithRetry(apiKey, baseURL, model string, retryConfig Ret
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 60 * time.Second,
+			Timeout: settings.Timeout("deepseek", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 	}

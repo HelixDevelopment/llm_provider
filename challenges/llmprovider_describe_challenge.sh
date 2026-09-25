@@ -9,6 +9,14 @@
 #   normal:    exits 0 only when the runner exits 0 (all 23
 #              invariants pass). Any deviation FAILS.
 #
+# Exit codes — three-valued, and 2 is NEVER a pass:
+#   0  the runner ran and every invariant passed
+#   1  a real finding (or, in mutate mode, an undetected mutation)
+#   2  COULD NOT DETERMINE — there is no Go toolchain on PATH, so the runner
+#      could not be executed at all. This used to print "PASSED (SKIP-OK)" and
+#      exit 0: a machine with no Go was reported as a machine whose 23
+#      invariants all held.
+#
 #   mutate:    sets LLMPROVIDER_MUTATE_RUNNER=1 which inverts
 #              invariant 3 (circuit.opens_after_failures.*)
 #              inside the runner. The runner MUST then exit
@@ -41,9 +49,11 @@ echo "  mode=${MODE}"
 echo "  module=${MODULE_DIR}"
 
 if ! command -v go >/dev/null 2>&1; then
-    echo "SKIP-OK: #env-no-go-toolchain"
-    echo "=== Describe Challenge: PASSED (SKIP-OK) ==="
-    exit 0
+    echo "COULD NOT DETERMINE: #env-no-go-toolchain — 'go' is not on PATH, so"
+    echo "  the in-process Challenge runner could not be executed. NOTHING was"
+    echo "  measured: the 23 invariants are NOT known to hold."
+    echo "=== Describe Challenge: COULD NOT DETERMINE ==="
+    exit 2
 fi
 
 cd "${MODULE_DIR}"
@@ -61,7 +71,16 @@ case "${MODE}" in
         # Belt-and-braces: assert the summary line carries
         # FAIL=0 — defends against an accidental exit-0 with
         # buried FAILs.
-        if ! echo "${out}" | grep -q "FAIL=0"; then
+        # Matched with bash's own pattern operator, NOT `echo | grep -q`.
+        # Under the `set -o pipefail` above, grep -q exits the instant it
+        # matches, echo is killed by SIGPIPE (141), and pipefail promotes that
+        # to the pipeline's status — so `if !` would take the FAILED branch
+        # BECAUSE the FAIL=0 line was present. Measured on this host with the
+        # marker present in every iteration: 0/200 non-zero at a 4 KiB body,
+        # 200/200 at 16 KiB. Today this runner emits 2402 bytes with FAIL=0 at
+        # offset 2391, so the trap was latent here rather than firing; it goes
+        # live the moment the runner gets chattier or grows a stack trace.
+        if [[ ${out} != *"FAIL=0"* ]]; then
             echo "=== Describe Challenge: FAILED (no FAIL=0 line) ==="
             exit 1
         fi

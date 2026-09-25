@@ -10,6 +10,23 @@ import (
 
 	"digital.vasic.llmprovider/pkg/i18n"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
+)
+
+// Settings keys for this adapter (one Go package, two files: gemini.go carries
+// the unified provider, gemini_api.go the HTTP transport). They share
+// LLMPROVIDER_GEMINI_{MODEL,BASE_URL,TIMEOUT}, because they are one backend
+// reached one way. The models-listing endpoint is keyed separately: it is a
+// different URL with a different shape, and folding it into BASE_URL would mean
+// an operator pointing the adapter at a proxy silently broke health checks.
+const (
+	// SettingsProvider keys the endpoint, model and timeout:
+	// LLMPROVIDER_GEMINI_BASE_URL, LLMPROVIDER_GEMINI_MODEL,
+	// LLMPROVIDER_GEMINI_TIMEOUT.
+	SettingsProvider = "gemini"
+	// SettingsProviderModels keys the models-listing endpoint used by
+	// HealthCheck: LLMPROVIDER_GEMINI_MODELS_BASE_URL.
+	SettingsProviderModels = "gemini_models"
 )
 
 const (
@@ -17,9 +34,17 @@ const (
 	GeminiAPIURL = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
 	// GeminiStreamAPIURL is the base URL for the Gemini API streaming endpoint.
 	GeminiStreamAPIURL = "https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent"
+	// GeminiModelsURL is the models-listing endpoint HealthCheck probes.
+	GeminiModelsURL = "https://generativelanguage.googleapis.com/v1beta/models"
 	// GeminiModel is the legacy default model (kept for backward compatibility).
 	GeminiModel = "gemini-2.0-flash"
 )
+
+// DefaultUnifiedTimeout is the compiled fallback for the unified provider,
+// which may drive a CLI or an ACP sub-provider and so waits longer than the
+// plain HTTP transport in gemini_api.go. Override with
+// LLMPROVIDER_GEMINI_TIMEOUT.
+const DefaultUnifiedTimeout = 180 * time.Second
 
 // ---------------------------------------------------------------------------
 // Shared types — used by all sub-providers (API, CLI, ACP)
@@ -206,8 +231,9 @@ type GeminiUnifiedConfig struct {
 // DefaultGeminiUnifiedConfig returns default configuration reading from env.
 func DefaultGeminiUnifiedConfig() GeminiUnifiedConfig {
 	return GeminiUnifiedConfig{
-		Model:           GeminiDefaultModel,
-		Timeout:         180 * time.Second,
+		// LLMPROVIDER_GEMINI_MODEL / LLMPROVIDER_GEMINI_TIMEOUT.
+		Model:           settings.Model(SettingsProvider, GeminiDefaultModel),
+		Timeout:         settings.Timeout(SettingsProvider, DefaultUnifiedTimeout),
 		MaxTokens:       8192,
 		APIKey:          os.Getenv("GEMINI_API_KEY"),
 		PreferredMethod: "auto",
@@ -217,7 +243,8 @@ func DefaultGeminiUnifiedConfig() GeminiUnifiedConfig {
 // NewGeminiUnifiedProvider creates a new unified Gemini provider.
 func NewGeminiUnifiedProvider(config GeminiUnifiedConfig) *GeminiUnifiedProvider {
 	if config.Timeout == 0 {
-		config.Timeout = 180 * time.Second
+		// LLMPROVIDER_GEMINI_TIMEOUT.
+		config.Timeout = settings.Timeout(SettingsProvider, DefaultUnifiedTimeout)
 	}
 	if config.MaxTokens == 0 {
 		config.MaxTokens = 8192
@@ -229,7 +256,8 @@ func NewGeminiUnifiedProvider(config GeminiUnifiedConfig) *GeminiUnifiedProvider
 		config.PreferredMethod = "auto"
 	}
 	if config.Model == "" {
-		config.Model = GeminiDefaultModel
+		// LLMPROVIDER_GEMINI_MODEL.
+		config.Model = settings.Model(SettingsProvider, GeminiDefaultModel)
 	}
 
 	p := &GeminiUnifiedProvider{
@@ -253,10 +281,16 @@ func NewGeminiUnifiedProvider(config GeminiUnifiedConfig) *GeminiUnifiedProvider
 // when an API key is provided, with CLI and ACP as fallbacks.
 func NewGeminiProvider(apiKey, baseURL, model string) *GeminiUnifiedProvider {
 	config := GeminiUnifiedConfig{
-		APIKey:          apiKey,
+		APIKey: apiKey,
+		// Timeout is left at its ZERO value on purpose. Writing the compiled
+		// 180s in here handed NewGeminiUnifiedProvider a non-zero timeout, so
+		// its own `config.Timeout == 0` check never fired and
+		// LLMPROVIDER_GEMINI_TIMEOUT was honoured on every construction path
+		// except the two backward-compatible ones — the frozen value winning
+		// silently. Leaving it zero routes this path through the same
+		// resolution as every other.
 		BaseURL:         baseURL,
 		Model:           model,
-		Timeout:         180 * time.Second,
 		MaxTokens:       8192,
 		PreferredMethod: "auto",
 	}
@@ -267,10 +301,10 @@ func NewGeminiProvider(apiKey, baseURL, model string) *GeminiUnifiedProvider {
 // custom retry configuration.
 func NewGeminiProviderWithRetry(apiKey, baseURL, model string, retryConfig RetryConfig) *GeminiUnifiedProvider {
 	config := GeminiUnifiedConfig{
-		APIKey:          apiKey,
+		APIKey: apiKey,
+		// Timeout deliberately left zero — see NewGeminiProvider.
 		BaseURL:         baseURL,
 		Model:           model,
-		Timeout:         180 * time.Second,
 		MaxTokens:       8192,
 		PreferredMethod: "auto",
 	}

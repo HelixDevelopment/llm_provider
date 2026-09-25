@@ -15,7 +15,13 @@ import (
 
 	"digital.vasic.llmprovider/pkg/discovery"
 	"digital.vasic.llmprovider/pkg/models"
+	"digital.vasic.llmprovider/pkg/settings"
 )
+
+// DefaultHTTPTimeout is the compiled fallback for this adapter's HTTP
+// client. It is a starting point, not a decision the library keeps making:
+// LLMPROVIDER_OPENROUTER_TIMEOUT overrides it (see pkg/settings).
+const DefaultHTTPTimeout = 60 * time.Second
 
 const (
 	defaultBaseURL = "https://openrouter.ai/api/v1"
@@ -119,7 +125,9 @@ func NewSimpleOpenRouterProviderWithBaseURL(apiKey, baseURL string) *SimpleOpenR
 // NewSimpleOpenRouterProviderWithRetry creates a new OpenRouter provider with custom retry config
 func NewSimpleOpenRouterProviderWithRetry(apiKey, baseURL string, retryConfig RetryConfig) *SimpleOpenRouterProvider {
 	if baseURL == "" {
-		baseURL = defaultBaseURL
+		// The compiled constant is a FALLBACK, not a decision this library
+		// keeps making for the operator: LLMPROVIDER_OPENROUTER_BASE_URL.
+		baseURL = settings.BaseURL("openrouter", defaultBaseURL)
 	}
 	appTitle := resolveAppTitle("")
 	httpReferer := resolveHTTPReferer("")
@@ -127,7 +135,7 @@ func NewSimpleOpenRouterProviderWithRetry(apiKey, baseURL string, retryConfig Re
 		apiKey:  apiKey,
 		baseURL: baseURL,
 		client: &http.Client{
-			Timeout: 60 * time.Second,
+			Timeout: settings.Timeout("openrouter", DefaultHTTPTimeout),
 		},
 		retryConfig: retryConfig,
 		appTitle:    appTitle,
@@ -438,12 +446,24 @@ func isAuthRetryableStatus(statusCode int) bool {
 
 // waitWithJitter waits for the specified duration plus random jitter
 func (p *SimpleOpenRouterProvider) waitWithJitter(ctx context.Context, delay time.Duration) {
-	// Add 10% jitter - using math/rand is acceptable for non-security jitter
-	jitter := time.Duration(rand.Float64() * 0.1 * float64(delay)) // #nosec G404 - jitter doesn't require cryptographic randomness
 	select {
 	case <-ctx.Done():
-	case <-time.After(delay + jitter):
+	case <-time.After(jitteredDelay(delay)):
 	}
+}
+
+// jitteredDelay returns delay plus up to 10% random jitter -- the exact
+// duration waitWithJitter arms its timer with.
+//
+// Extracted so that the "at most 10% over" bound can be asserted directly and
+// deterministically. Asserting it through wall-clock elapsed time does not
+// work: elapsed time also contains scheduler latency the host controls, so a
+// wall-clock ceiling measures the machine at least as much as it measures this
+// package, and fails on a busy host while the code is correct.
+func jitteredDelay(delay time.Duration) time.Duration {
+	// Add 10% jitter - using math/rand is acceptable for non-security jitter
+	jitter := time.Duration(rand.Float64() * 0.1 * float64(delay)) // #nosec G404 - jitter doesn't require cryptographic randomness
+	return delay + jitter
 }
 
 // nextDelay calculates the next delay using exponential backoff

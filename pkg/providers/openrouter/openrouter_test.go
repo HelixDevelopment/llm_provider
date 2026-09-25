@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -360,47 +362,115 @@ func TestSimpleOpenRouterProvider_CompleteStream(t *testing.T) {
 	assert.NotEmpty(t, responses, "expected at least one response")
 }
 
-func TestSimpleOpenRouterProvider_HealthCheck(t *testing.T) {
-	tests := []struct {
-		name    string
-		apiKey  string
-		wantErr bool
-	}{
-		{
-			name:    "valid api key",
-			apiKey:  "test-api-key",
-			wantErr: false,
-		},
-		{
-			name:    "empty api key",
-			apiKey:  "",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			provider := NewSimpleOpenRouterProvider(tt.apiKey)
-			err := provider.HealthCheck()
-			if tt.wantErr {
-				assert.Error(t, err)
-				assert.Contains(t, err.Error(), "API key is required")
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
+// modelsFixture serves an OpenAI-compatible /models response, which is the
+// shape pkg/discovery parses when no custom ResponseParser is configured. The
+// returned URL is an OpenRouter-style API base URL, so the provider appends
+// "/models" to it exactly as it does in production.
+func modelsFixture(t *testing.T, ids ...string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/models") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// The adapter must authenticate discovery, not just completions.
+		assert.Equal(t, "Bearer test-api-key", r.Header.Get("Authorization"))
+		data := make([]map[string]any, 0, len(ids))
+		for _, id := range ids {
+			data = append(data, map[string]any{"id": id, "object": "model"})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
 }
 
+// TestSimpleOpenRouterProvider_HealthCheck exercises both branches of the
+// health check against controlled endpoints.
+//
+// The "valid api key" case used to call NewSimpleOpenRouterProvider, which
+// pins the production base URL, so the assertion `NoError(HealthCheck())` was
+// really "openrouter.ai is up, reachable, and accepts the literal string
+// test-api-key". It passed here only because this host has egress and
+// OpenRouter answers /models unauthenticated; with HTTP(S)_PROXY pointed at a
+// closed port it failed with a dial error. The credential-shape branch below
+// never needed a network at all — it returns before any request is made.
+func TestSimpleOpenRouterProvider_HealthCheck(t *testing.T) {
+	t.Run("reachable endpoint", func(t *testing.T) {
+		srv := modelsFixture(t, "anthropic/claude-3.5-sonnet")
+		provider := NewSimpleOpenRouterProviderWithBaseURL("test-api-key", srv.URL)
+		assert.NoError(t, provider.HealthCheck())
+	})
+
+	t.Run("empty api key", func(t *testing.T) {
+		// Short-circuits before any request: no endpoint is needed, and none
+		// must be contacted.
+		provider := NewSimpleOpenRouterProvider("")
+		err := provider.HealthCheck()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "API key is required")
+	})
+
+	t.Run("endpoint rejects the credential", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		defer srv.Close()
+
+		provider := NewSimpleOpenRouterProviderWithBaseURL("test-api-key", srv.URL)
+		err := provider.HealthCheck()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid or expired")
+	})
+}
+
+// TestSimpleOpenRouterProvider_GetCapabilities pins the ADAPTER'S BEHAVIOUR
+// against a controlled fixture.
+//
+// It used to construct a provider on the production base URL and assert
+// `NotEmpty(SupportedModels)` plus `len >= 5` against LIVE discovery. That is
+// not a unit test: it asserts that OpenRouter is up and still lists at least
+// five chat models. Worse, the thing it demanded is the OPPOSITE of the
+// documented contract — pkg/discovery returns nil when live discovery is
+// unreachable (CONST-036, no hardcoded fallback), so the old assertion
+// required a CORRECT implementation to fail.
+// SYNTHETIC fixture model ids. They were real vendor ids, which made this
+// fixture a frozen environment assumption in its own right — a test that names
+// a live vendor's catalogue carries the same defect as the code it tests, and
+// scripts/audit-environment-assumptions.sh reported exactly that.
+//
+// Two properties are load-bearing and both are preserved: the ids keep the
+// "<vendor>/<model>" shape OpenRouter uses, and the chat filter in
+// pkg/discovery rejects any id containing "embedding", so fixtureEmbedding must
+// contain that substring and the other five must not. Six in, five kept out of
+// the filter, one dropped — which is what `assert.Len(..., 5)` measures.
+const (
+	fixtureChatA     = "vendor-a/synthetic-chat-a"
+	fixtureChatE     = "vendor-e/synthetic-chat-e"
+	fixtureEmbedding = "vendor-f/synthetic-text-embedding"
+)
+
 func TestSimpleOpenRouterProvider_GetCapabilities(t *testing.T) {
-	provider := NewSimpleOpenRouterProvider("test-api-key")
+	srv := modelsFixture(t,
+		fixtureChatA,
+		"vendor-b/synthetic-chat-b",
+		"vendor-c/synthetic-chat-c",
+		"vendor-d/synthetic-chat-d",
+		fixtureChatE,
+		fixtureEmbedding,
+	)
+	provider := NewSimpleOpenRouterProviderWithBaseURL("test-api-key", srv.URL)
 	caps := provider.GetCapabilities()
 
 	assert.NotNil(t, caps)
-	assert.NotEmpty(t, caps.SupportedModels)
-	// Dynamic model discovery fetches real models from OpenRouter API
-	// Use minimum count check instead of specific models (API changes over time)
-	assert.GreaterOrEqual(t, len(caps.SupportedModels), 5)
+	// Discovery reached the fixture and its result was plumbed into the
+	// capabilities — the behaviour the old assertion was reaching for.
+	assert.Contains(t, caps.SupportedModels, fixtureChatA)
+	assert.Contains(t, caps.SupportedModels, fixtureChatE)
+	assert.Len(t, caps.SupportedModels, 5)
+	// And the chat-model filter still applies to whatever the endpoint returns.
+	assert.NotContains(t, caps.SupportedModels, fixtureEmbedding)
 
 	assert.Contains(t, caps.SupportedFeatures, "text_completion")
 	assert.Contains(t, caps.SupportedFeatures, "chat")
@@ -429,6 +499,79 @@ func TestSimpleOpenRouterProvider_GetCapabilities(t *testing.T) {
 	assert.Equal(t, "v1", caps.Metadata["api_version"])
 	assert.Equal(t, "basic", caps.Metadata["routing"])
 	assert.Equal(t, "true", caps.Metadata["multi_tenancy"])
+}
+
+// TestSimpleOpenRouterProvider_GetCapabilitiesDiscoveryUnavailable is the
+// honest-unavailability half.
+//
+// When discovery cannot answer, SupportedModels MUST be empty — never the
+// deprecated FallbackModels catalogue this provider still passes to the
+// discoverer. Serving that list would hand a caller model IDs it may not be
+// able to invoke, which CONST-036 calls a structural bluff. The names are
+// asserted individually because "empty" alone would also pass if the list
+// leaked through under a different key.
+func TestSimpleOpenRouterProvider_GetCapabilitiesDiscoveryUnavailable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	provider := NewSimpleOpenRouterProviderWithBaseURL("test-api-key", srv.URL)
+	caps := provider.GetCapabilities()
+
+	require.NotNil(t, caps)
+	assert.Empty(t, caps.SupportedModels,
+		"unreachable discovery must report NO models, not a stale hardcoded catalogue (CONST-036)")
+	for _, fallback := range []string{
+		"anthropic/claude-3.5-sonnet",
+		"openai/gpt-4o",
+		"google/gemini-pro",
+	} {
+		assert.NotContains(t, caps.SupportedModels, fallback,
+			"the deprecated FallbackModels list must never reach a caller")
+	}
+	// The rest of the record is still served: unavailable models do not make
+	// the provider's fixed capabilities unknown.
+	assert.True(t, caps.SupportsStreaming)
+	assert.Equal(t, "OpenRouter", caps.Metadata["provider"])
+}
+
+// TestSimpleOpenRouterProviderModelsEndpointMatchesDefault guards the
+// config-injection path: with the DEFAULT base URL, discovery and the health
+// check must still address the production models endpoint, byte for byte.
+func TestSimpleOpenRouterProviderModelsEndpointMatchesDefault(t *testing.T) {
+	assert.Equal(t, "https://openrouter.ai/api/v1",
+		NewSimpleOpenRouterProvider("k").baseURL)
+	assert.Equal(t, "https://openrouter.ai/api/v1/models",
+		NewSimpleOpenRouterProvider("k").baseURL+"/models")
+}
+
+// TestSimpleOpenRouterProviderLiveDiscovery is the live probe, kept but made
+// OPT-IN.
+//
+// It is genuinely useful — it is the only thing here that would notice
+// OpenRouter moving its models endpoint — but it depends on a third party and a
+// real credential, so it must never be part of the default suite. It SKIPS with
+// a stated reason rather than failing, because "nobody exported a key" is not a
+// defect in this adapter.
+//
+//	OPENROUTER_LIVE_DISCOVERY_TEST=1 OPENROUTER_API_KEY=<real key> go test ./pkg/providers/openrouter/
+func TestSimpleOpenRouterProviderLiveDiscovery(t *testing.T) {
+	if os.Getenv("OPENROUTER_LIVE_DISCOVERY_TEST") == "" {
+		t.Skip("live discovery probe is opt-in: set OPENROUTER_LIVE_DISCOVERY_TEST=1 " + // SKIP-OK: #opt-in-live-probe
+			"together with a real OPENROUTER_API_KEY to run it")
+	}
+	apiKey := os.Getenv("OPENROUTER_API_KEY")
+	if apiKey == "" {
+		t.Skip("OPENROUTER_LIVE_DISCOVERY_TEST is set but OPENROUTER_API_KEY is empty; a " + // SKIP-OK: #opt-in-live-probe
+			"live probe without a credential would measure the credential, not the adapter")
+	}
+
+	caps := NewSimpleOpenRouterProvider(apiKey).GetCapabilities()
+	require.NotNil(t, caps)
+	assert.GreaterOrEqual(t, len(caps.SupportedModels), 5,
+		"live discovery with a real credential returned fewer than five models — "+
+			"either the OpenRouter models endpoint moved or the credential is not valid")
 }
 
 func TestSimpleOpenRouterProvider_ValidateConfig(t *testing.T) {
@@ -1285,14 +1428,38 @@ func TestSimpleOpenRouterProvider_HealthCheck_NetworkError(t *testing.T) {
 func TestSimpleOpenRouterProvider_WaitWithJitter(t *testing.T) {
 	provider := NewSimpleOpenRouterProvider("test-key")
 
-	// Test normal wait
+	baseDelay := 50 * time.Millisecond
+
+	// Test normal wait. The lower bound is load-robust: extra CPU pressure
+	// can only delay a timer, never fire it early.
 	start := time.Now()
-	provider.waitWithJitter(context.Background(), 50*time.Millisecond)
+	provider.waitWithJitter(context.Background(), baseDelay)
 	elapsed := time.Since(start)
 
-	// Should wait at least the delay (50ms) but not more than delay + 10% jitter + margin
-	assert.GreaterOrEqual(t, elapsed.Milliseconds(), int64(50))
-	assert.Less(t, elapsed.Milliseconds(), int64(70)) // 50ms + 10% jitter + margin
+	assert.GreaterOrEqual(t, elapsed, baseDelay)
+
+	// Upper bound: deliberately NOT asserted in wall-clock time. Elapsed time
+	// also contains scheduler latency this package does not control, so a
+	// wall-clock ceiling measures the host at least as much as it measures
+	// waitWithJitter. Reproduced under deliberate CPU load as
+	// `"82" is not less than "70"`.
+	// The property that ceiling was proxying -- the timer is armed for the
+	// base delay plus AT MOST 10% jitter -- is asserted directly below, on
+	// every value the production path actually computes.
+	minD, maxD := jitteredDelay(baseDelay), jitteredDelay(baseDelay)
+	for i := 0; i < 100000; i++ {
+		d := jitteredDelay(baseDelay)
+		if d < minD {
+			minD = d
+		}
+		if d > maxD {
+			maxD = d
+		}
+	}
+	assert.GreaterOrEqual(t, minD, baseDelay,
+		"jittered delay must never be shorter than the base delay")
+	assert.Less(t, maxD, baseDelay+baseDelay/10,
+		"jitter must never exceed 10% of the base delay")
 }
 
 // Test waitWithJitter with cancelled context
