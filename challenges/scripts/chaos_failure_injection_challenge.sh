@@ -34,7 +34,7 @@
 # pass (0); a stub that breaks after malformed input, one that drops an
 # oversized header, one that fails under the mixed load and one that dies
 # right after it must each exit 1 naming their step; no target, an unknown
-# argument, a refused health URL, a refused chaos port and a malformed knob
+# argument, a refused health URL, a refused chaos port and a malformed knob or a 0 % threshold
 # must exit 2; a deleted step (planted in a copy) trips the floor (1) and a
 # truncated load (planted in a copy) trips the request floor (2).
 
@@ -120,9 +120,13 @@ prove_failure() {
         pf_expect "U4 a knob that is not a number" 2 "#bad-knob" \
             pf_run "$c" "$U=$url/health" "$H=127.0.0.1" "$P=$url_PORT" CHAOS_LEGIT_REQUESTS=lots
     else pf_undet "U4" "could not start the stub target"; fi
+    if c="$(pf_copy u0pct)" && pf_stub url ok; then
+        pf_expect "U6 a 0 % pass threshold (every request may fail) is refused" 2 "#bad-knob" \
+            pf_run "$c" "$U=$url/health" "$H=127.0.0.1" "$P=$url_PORT" "${knobs[@]}" CHAOS_LEGIT_MIN_PASS_PCT=0
+    else pf_undet "U6" "could not start the stub target"; fi
     if c="$(pf_copy u5)"; then
-        pf_expect "U5 unknown argument" 2 "unknown argument" pf_run "$c" -- --no-such-flag
-    else pf_undet "U5" "could not copy"; fi
+        pf_expect "U7 unknown argument" 2 "unknown argument" pf_run "$c" -- --no-such-flag
+    else pf_undet "U7" "could not copy"; fi
     pf_end
 }
 

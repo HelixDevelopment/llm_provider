@@ -71,9 +71,11 @@
 # journal, a huge journal) inside a user+mount namespace with throw-away
 # directories over /etc/systemd and /run/systemd, and asserts the exit code of
 # each — 0 for an active guard, 1 for a broken one, 2 for a host it cannot
-# measure. The real host's power configuration is never read or written. The
-# proof exits with the contract's verdict: 0 every condition held, 1 this file
-# broke its contract, 2 the sandbox could not be built (e.g. unprivileged user
+# measure. The real host's power configuration is never read or written.
+# Before that, a copy of THIS file is run with an unknown argument and must exit
+# 2 naming it (case A1) — the contract does not exercise this file's arguments.
+# The proof exits 1 when A1 fails, else with the contract's verdict: 0 every
+# condition held, 1 this file broke its contract, 2 the sandbox could not be built (e.g. unprivileged user
 # namespaces restricted — run it under `podman unshare`) or the contract is
 # missing. NEVER a pass when it could not run.
 
@@ -97,9 +99,26 @@ if [[ "$PROVE" -eq 1 ]]; then
     echo "prove-failure: cannot determine — the sibling proof $contract is missing or unreadable"
     exit 2
   fi
+  # The contract proves the verdicts; it does not exercise THIS file's own
+  # argument handling, so that is proven here first, on a copy of this file.
+  self_dir="$(mktemp -d)" || { echo "prove-failure: cannot determine — mktemp -d failed"; exit 2; }
+  trap 'rm -rf "$self_dir"' EXIT
+  cp -- "${BASH_SOURCE[0]}" "$self_dir/host_no_auto_suspend_challenge.sh" || { echo "prove-failure: cannot determine — cannot copy this file"; exit 2; }
+  arg_out="$(timeout 120 env -i PATH="$PATH" HOME="$self_dir" TMPDIR="$self_dir" bash "$self_dir/host_no_auto_suspend_challenge.sh" --no-such-flag 2>&1)"
+  arg_rc=$?
+  if [[ "$arg_rc" -eq 2 && "$arg_out" == *"unknown argument"* ]]; then
+    echo "  PASS A1 an unknown argument is rc 2 naming 'unknown argument' (rc $arg_rc)"
+  else
+    echo "  FAIL A1 an unknown argument: want rc 2 naming 'unknown argument', got rc $arg_rc"
+  fi
   echo "prove-failure: host_no_auto_suspend_challenge.sh — running its sibling contract challenge"
   bash "$contract"
-  exit $?
+  contract_rc=$?
+  if [[ "$arg_rc" -ne 2 || "$arg_out" != *"unknown argument"* ]]; then
+    echo "prove-failure: FAIL — A1 did not hold (the contract's own verdict was rc $contract_rc)"
+    exit 1
+  fi
+  exit "$contract_rc"
 fi
 
 PASS_COUNT=0

@@ -57,7 +57,7 @@ prove_failure() {
     return 2
   fi
   pf_begin "$SELF" "no-suspend-calls challenge" grep || return $?
-  local d c
+  local d
   # ns_tree NAME [noscanner] — a planted repository tree; prints its root.
   ns_tree() {
     local r="$PF_T/case.$1/repo"

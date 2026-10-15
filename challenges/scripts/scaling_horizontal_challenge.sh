@@ -33,7 +33,7 @@
 # must pass (0); a replica reporting a wrong status, one failing under load,
 # two replicas serving different bodies and a replica dying right after the
 # load must each exit 1 naming their step; no list, one healthy replica plus a
-# refused port, the same replica listed twice, a malformed knob and an unknown
+# refused port, the same replica listed twice, a malformed knob or a 0 % threshold and an unknown
 # argument must exit 2; a deleted step (planted in a copy) trips the floor (1)
 # and a truncated load (planted in a copy) trips the request floor (2).
 
@@ -107,9 +107,13 @@ prove_failure() {
     if c="$(pf_copy u4)" && pf_stub a ok && pf_stub b ok; then
         pf_expect "U4 a knob that is not a number" 2 "#bad-knob" pf_run "$c" "$R=$a,$b" SCALING_REQS_PER_REPLICA=x
     else pf_undet "U4" "could not start the stub replicas"; fi
+    if c="$(pf_copy u0pct)" && pf_stub a ok && pf_stub b ok; then
+        pf_expect "U6 a 0 % pass threshold (every request may fail) is refused" 2 "#bad-knob" \
+            pf_run "$c" "$R=$a,$b" "${knobs[@]}" SCALING_MIN_PASS_PCT=0
+    else pf_undet "U6" "could not start the stub target"; fi
     if c="$(pf_copy u5)"; then
-        pf_expect "U5 unknown argument" 2 "unknown argument" pf_run "$c" -- --no-such-flag
-    else pf_undet "U5" "could not copy"; fi
+        pf_expect "U7 unknown argument" 2 "unknown argument" pf_run "$c" -- --no-such-flag
+    else pf_undet "U7" "could not copy"; fi
     pf_end
 }
 

@@ -37,7 +37,7 @@
 # pass (0); a stub failing its baseline, one reporting a wrong status, one
 # failing under load, one that slows down after the load and one dying right
 # after it must each exit 1 naming their step; no target, an unknown argument,
-# a refused port and a malformed knob must exit 2; a deleted step (planted in
+# a refused port and a malformed knob or a 0 % threshold must exit 2; a deleted step (planted in
 # a copy) trips the floor (1) and a truncated load (planted in a copy) trips
 # the request floor (2). Loopback latencies are sub-millisecond, so the proof
 # runs with a 5000 % degradation budget and a 0.3 s slow-down (> 100x).
@@ -111,9 +111,13 @@ prove_failure() {
     if c="$(pf_copy u3)" && pf_stub url ok; then
         pf_expect "U3 a knob that is not a number" 2 "#bad-knob" pf_run "$c" "$U=$url/health" STRESS_DURATION_SEC=1.5
     else pf_undet "U3" "could not start the stub target"; fi
+    if c="$(pf_copy u0pct)" && pf_stub url ok; then
+        pf_expect "U5 a 0 % pass threshold (every request may fail) is refused" 2 "#bad-knob" \
+            pf_run "$c" "$U=$url/health" "${knobs[@]}" STRESS_MIN_PASS_PCT=0
+    else pf_undet "U5" "could not start the stub target"; fi
     if c="$(pf_copy u4)"; then
-        pf_expect "U4 unknown argument" 2 "unknown argument" pf_run "$c" -- --no-such-flag
-    else pf_undet "U4" "could not copy"; fi
+        pf_expect "U6 unknown argument" 2 "unknown argument" pf_run "$c" -- --no-such-flag
+    else pf_undet "U6" "could not copy"; fi
     pf_end
 }
 
