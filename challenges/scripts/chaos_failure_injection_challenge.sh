@@ -1,65 +1,202 @@
 #!/usr/bin/env bash
-# chaos_failure_injection_challenge.sh — anti-bluff Chaos Challenge
-# for LLMProvider per CONST-035 + CONST-050(B). Cascade per CONST-051(A).
+# chaos_failure_injection_challenge.sh — anti-bluff Chaos Challenge per
+# CONST-035 + CONST-050(B); cascaded per CONST-051(A). Client-side fault
+# injection against <PREFIX>_HEALTH_URL / <PREFIX>_CHAOS_HOST:<PREFIX>_CHAOS_PORT
+# (<PREFIX> = C50_PREFIX in the module-identity block below).
 #
-# ── EXIT CODES — three-valued, and 2 is NEVER a pass ─────────────────────────
-#   0  the challenge ran against a real target and every assertion passed
-#   1  a real finding: the target was there to be tested and an assertion failed
-#   2  COULD NOT DETERMINE — $LLMPROVIDER_VD_HEALTH_URL or
-#      $LLMPROVIDER_VD_CHAOS_PORT is unset, or the target did not answer 200
-#      before injection started.
-#      NOTHING was measured, so the subject is NOT known to be healthy.
+# Six steps, each of which must pass (the executed-step floor: a step that was
+# skipped or deleted is a finding, never a quiet pass):
+#   [1/6] pre-chaos health answers 200, and the chaos port accepts a connection
+#   [2/6] a salvo of malformed requests leaves health answering 200
+#   [3/6] an oversized (8 KiB) header gets 200/400/413/414/431/494, not a hang
+#         or a dropped connection
+#   [4/6] five slow-loris connections are opened
+#   [5/6] CHAOS_LEGIT_REQUESTS legitimate requests under that pressure reach
+#         CHAOS_LEGIT_MIN_PASS_PCT % 200s (every request must be recorded)
+#   [6/6] post-chaos health answers 200
 #
-# Why the third value exists. Every branch below that could not reach its
-# target used to print "PASSED (SKIP-OK)" and exit 0. That made a DNS blip, a
-# restarting target, an unexported variable and a typo'd URL
-# indistinguishable — BY EXIT CODE — from a genuine pass, so any caller that
-# reads the exit status (the only thing most callers read) was told the subject
-# had been tested and was fine when in fact nothing had been tested at all.
-# "Could not test" must never read as "tested and fine".
+# Usage:
+#   bash chaos_failure_injection_challenge.sh
+#   bash chaos_failure_injection_challenge.sh --prove-failure
+#
+# Exit (three-valued; a finding outranks a could-not-determine; 2 is NEVER a pass):
+#   0 = the target was reached and every chaos step held
+#   1 = a real finding — the target degraded under injected faults, or a step
+#       was skipped (executed-step floor)
+#   2 = COULD NOT DETERMINE — an unknown argument, no target configured, the
+#       target not answering 200 before injection, the chaos port refusing
+#       connections (no fault could be injected), a knob that is not a valid
+#       number, fewer responses recorded than requests sent, or no curl/timeout.
+#       Nothing (more) was judged; the target is NOT known to be resilient.
+#
+# --prove-failure (§1.1 paired proof, VSC-369; harness lib/const050b_proof.sh):
+# runs copies of THIS file against loopback stub targets. A healthy stub must
+# pass (0); a stub that breaks after malformed input, one that drops an
+# oversized header, one that fails under the mixed load and one that dies
+# right after it must each exit 1 naming their step; no target, an unknown
+# argument, a refused health URL, a refused chaos port and a malformed knob
+# must exit 2; a deleted step (planted in a copy) trips the floor (1) and a
+# truncated load (planted in a copy) trips the request floor (2).
 
 set -uo pipefail
-HEALTH_URL="${LLMPROVIDER_VD_HEALTH_URL:-}"
-CHAOS_HOST="${LLMPROVIDER_VD_CHAOS_HOST:-localhost}"
-CHAOS_PORT="${LLMPROVIDER_VD_CHAOS_PORT:-}"
+
+# ── module identity: the ONLY lines that differ between the copies of this file ──
+C50_MODULE="LLMProvider"
+C50_PREFIX="LLMPROVIDER_VD"
+
+usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "${BASH_SOURCE[0]}"; }
+
+PROVE=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --prove-failure) PROVE=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "COULD NOT DETERMINE: unknown argument '$1' — this challenge takes only --prove-failure." >&2
+           exit 2 ;;
+    esac
+done
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SELF="$HERE/$(basename "${BASH_SOURCE[0]}")"
+
+prove_failure() {
+    if [[ ! -r "$HERE/lib/const050b_proof.sh" ]]; then
+        echo "prove-failure: cannot determine — $HERE/lib/const050b_proof.sh is missing or unreadable"
+        return 2
+    fi
+    # shellcheck source=lib/const050b_proof.sh
+    source "$HERE/lib/const050b_proof.sh"
+    pf_begin "$SELF" "chaos challenge" curl python3 bash || return $?
+    local U="${C50_PREFIX}_HEALTH_URL" H="${C50_PREFIX}_CHAOS_HOST" P="${C50_PREFIX}_CHAOS_PORT"
+    local g_from c url url_PORT closed knobs=(CHAOS_LEGIT_REQUESTS=20)
+    # C1: clean control
+    if c="$(pf_copy c1)" && pf_stub url ok; then
+        pf_expect "C1 healthy stub target passes all 6 steps" 0 "Chaos Challenge: PASSED" \
+            pf_run "$c" "$U=$url/health" "$H=127.0.0.1" "$P=$url_PORT" "${knobs[@]}"
+    else pf_undet "C1" "could not start the stub target"; fi
+    # M1..M4: one broken stub target per case
+    if c="$(pf_copy m1)" && pf_stub url break-on-malformed; then
+        pf_expect "M1 target that breaks after malformed input" 1 "[2/6] FAIL" \
+            pf_run "$c" "$U=$url/health" "$H=127.0.0.1" "$P=$url_PORT" "${knobs[@]}"
+    else pf_undet "M1" "could not start the stub target"; fi
+    if c="$(pf_copy m2)" && pf_stub url reject-oversize; then
+        pf_expect "M2 target that drops an oversized header" 1 "[3/6] FAIL" \
+            pf_run "$c" "$U=$url/health" "$H=127.0.0.1" "$P=$url_PORT" "${knobs[@]}"
+    else pf_undet "M2" "could not start the stub target"; fi
+    # counted GETs before the mixed load: pre-check, "GET //" of the salvo,
+    # post-salvo check, oversized request = 4
+    if c="$(pf_copy m3)" && pf_stub url fail-after 8; then
+        pf_expect "M3 target failing under the mixed load" 1 "[5/6] FAIL" \
+            pf_run "$c" "$U=$url/health" "$H=127.0.0.1" "$P=$url_PORT" "${knobs[@]}"
+    else pf_undet "M3" "could not start the stub target"; fi
+    if c="$(pf_copy m4)" && pf_stub url fail-after 24; then
+        pf_expect "M4 target dead right after the chaos" 1 "[6/6] FAIL" \
+            pf_run "$c" "$U=$url/health" "$H=127.0.0.1" "$P=$url_PORT" "${knobs[@]}"
+    else pf_undet "M4" "could not start the stub target"; fi
+    # G1/G2: defects planted in the copy of this file
+    g_from='pass_step '; g_from+='6 "Post-chaos"'
+    if c="$(pf_copy g1)" && pf_plant "$c" "$g_from" ':' && pf_stub url ok; then
+        pf_expect "G1 a deleted step trips the executed-step floor" 1 "executed-step floor" \
+            pf_run "$c" "$U=$url/health" "$H=127.0.0.1" "$P=$url_PORT" "${knobs[@]}"
+    else pf_undet "G1" "could not plant the defect"; fi
+    g_from='seq '; g_from+='1 "$LEGIT_REQS" |'
+    if c="$(pf_copy g2)" && pf_plant "$c" "$g_from" 'seq 2 "$LEGIT_REQS" |' && pf_stub url ok; then
+        pf_expect "G2 a truncated load trips the executed-request floor" 2 "executed-request floor" \
+            pf_run "$c" "$U=$url/health" "$H=127.0.0.1" "$P=$url_PORT" "${knobs[@]}"
+    else pf_undet "G2" "could not plant the defect"; fi
+    # U1..U6: could not determine
+    if c="$(pf_copy u1)"; then
+        pf_expect "U1 no target configured" 2 "#env-no-target" pf_run "$c"
+    else pf_undet "U1" "could not copy"; fi
+    if c="$(pf_copy u2)" && pf_closed_port closed; then
+        pf_expect "U2 unreachable target (refused loopback port)" 2 "#env-target-down" \
+            pf_run "$c" "$U=http://127.0.0.1:$closed/health" "$H=127.0.0.1" "$P=$closed" "${knobs[@]}"
+    else pf_undet "U2" "could not find a refused port"; fi
+    if c="$(pf_copy u3)" && pf_stub url ok && pf_closed_port closed; then
+        pf_expect "U3 healthy target but a refused chaos port: nothing injected" 2 "#env-chaos-port-closed" \
+            pf_run "$c" "$U=$url/health" "$H=127.0.0.1" "$P=$closed" "${knobs[@]}"
+    else pf_undet "U3" "could not start the stub target"; fi
+    if c="$(pf_copy u4)" && pf_stub url ok; then
+        pf_expect "U4 a knob that is not a number" 2 "#bad-knob" \
+            pf_run "$c" "$U=$url/health" "$H=127.0.0.1" "$P=$url_PORT" CHAOS_LEGIT_REQUESTS=lots
+    else pf_undet "U4" "could not start the stub target"; fi
+    if c="$(pf_copy u5)"; then
+        pf_expect "U5 unknown argument" 2 "unknown argument" pf_run "$c" -- --no-such-flag
+    else pf_undet "U5" "could not copy"; fi
+    pf_end
+}
+
+if [[ "$PROVE" -eq 1 ]]; then
+    prove_failure
+    exit $?
+fi
+
+# ── live challenge body ──────────────────────────────────────────────────────
+URL_VAR="${C50_PREFIX}_HEALTH_URL"
+HOST_VAR="${C50_PREFIX}_CHAOS_HOST"
+PORT_VAR="${C50_PREFIX}_CHAOS_PORT"
+HEALTH_URL="${!URL_VAR:-}"
+CHAOS_HOST="${!HOST_VAR:-localhost}"
+CHAOS_PORT="${!PORT_VAR:-}"
 LEGIT_REQS="${CHAOS_LEGIT_REQUESTS:-100}"
 MIN_PCT="${CHAOS_LEGIT_MIN_PASS_PCT:-95}"
+STEPS=6
+STEPS_OK=0
+NAME="$C50_MODULE Chaos Challenge"
 
-echo "=== LLMProvider Chaos Failure-Injection Challenge ==="
+pass_step() { STEPS_OK=$((STEPS_OK + 1)); echo "[$1/$STEPS] $2: PASS${3:+ ($3)}"; }
+fail_step() { echo "[$1/$STEPS] FAIL: $2"; echo "=== $NAME: FAILED ==="; exit 1; }
+undetermined() {
+    echo "COULD NOT DETERMINE: $1"
+    echo "  Nothing (more) was judged. $NAME is NOT known to be resilient."
+    echo "=== $NAME: COULD NOT DETERMINE ($2) ==="
+    exit 2
+}
+
+echo "=== $C50_MODULE Chaos Failure-Injection Challenge ==="
 echo "  url=$HEALTH_URL host=${CHAOS_HOST}:${CHAOS_PORT}"
 
-if [[ -z "$HEALTH_URL" ]] || [[ -z "$CHAOS_PORT" ]]; then
-    echo "[1/6] COULD NOT DETERMINE: LLMPROVIDER_VD_HEALTH_URL/_PORT unset — there is no target to injure."
-    echo "  Nothing was measured. LLMProvider Chaos Challenge is NOT known to be healthy."
-    echo "=== LLMProvider Chaos Challenge: COULD NOT DETERMINE (#env-no-target) ==="
-    exit 2
-fi
+for tool in curl timeout; do
+    command -v "$tool" >/dev/null 2>&1 || undetermined "'$tool' is not on PATH" "#env-no-tool"
+done
+[[ -n "$HEALTH_URL" && -n "$CHAOS_PORT" ]] ||
+    undetermined "$URL_VAR / $PORT_VAR unset — there is no target to injure" "#env-no-target"
+[[ "$CHAOS_PORT" =~ ^[1-9][0-9]{0,4}$ ]] && (( CHAOS_PORT <= 65535 )) ||
+    undetermined "$PORT_VAR='$CHAOS_PORT' is not a TCP port" "#bad-knob"
+[[ "$LEGIT_REQS" =~ ^[1-9][0-9]*$ ]] ||
+    undetermined "CHAOS_LEGIT_REQUESTS='$LEGIT_REQS' is not a positive integer" "#bad-knob"
+[[ "$MIN_PCT" =~ ^[1-9][0-9]*$ ]] && (( MIN_PCT <= 100 )) ||
+    undetermined "CHAOS_LEGIT_MIN_PASS_PCT='$MIN_PCT' is not a percentage in 1..100" "#bad-knob"
+
 pre=$(curl -sS --max-time 5 -o /dev/null -w "%{http_code}" "$HEALTH_URL" 2>/dev/null) || pre="000"
-if [[ "$pre" != "200" ]]; then
-    echo "[1/6] COULD NOT DETERMINE: target did not answer 200 before injection (HTTP $pre)."
-    echo "  Nothing was measured. LLMProvider Chaos Challenge is NOT known to be healthy."
-    echo "=== LLMProvider Chaos Challenge: COULD NOT DETERMINE (#env-target-down) ==="
-    exit 2
-fi
-echo "[1/6] Pre-chaos: PASS"
+[[ "$pre" == "200" ]] ||
+    undetermined "target did not answer 200 before injection (HTTP $pre)" "#env-target-down"
+# A refused chaos port used to inject NOTHING and then pass every step.
+timeout 3 bash -c ": <>/dev/tcp/$CHAOS_HOST/$CHAOS_PORT" 2>/dev/null ||
+    undetermined "the chaos endpoint $CHAOS_HOST:$CHAOS_PORT refused a connection — no fault can be injected" "#env-chaos-port-closed"
+pass_step 1 "Pre-chaos"
 
 for case in "BADVERB / HTTP/1.1" "GET / HTTP/9.9" "GET // HTTP/1.1" "INVALID"; do
     printf '%s\r\nHost: %s\r\n\r\n' "$case" "$CHAOS_HOST" 2>/dev/null \
         | timeout 3 bash -c "exec 3<>/dev/tcp/$CHAOS_HOST/$CHAOS_PORT && cat >&3 && cat <&3" >/dev/null 2>&1 || true
 done
 post=$(curl -sS --max-time 5 -o /dev/null -w "%{http_code}" "$HEALTH_URL" 2>/dev/null) || post="000"
-[[ "$post" != "200" ]] && { echo "[2/6] FAIL"; exit 1; }
-echo "[2/6] Malformed-salvo: PASS"
+[[ "$post" == "200" ]] || fail_step 2 "health answered HTTP $post after the malformed salvo"
+pass_step 2 "Malformed-salvo"
 
-huge=$(head -c 8192 /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 8192)
+# exactly 8192 bytes (the old `tr -dc` over /dev/urandom kept only ~2 KiB)
+huge=$(printf '%8192s' '' | tr ' ' 'A')
 oversize=$(curl -sS --max-time 5 -o /dev/null -w "%{http_code}" -H "X-Chaos-Huge: $huge" "$HEALTH_URL" 2>/dev/null) || oversize="000"
 case "$oversize" in
-    200|400|413|414|431|494) echo "[3/6] Oversized: PASS (HTTP $oversize)";;
-    *) echo "[3/6] FAIL"; exit 1;;
+    200|400|413|414|431|494) pass_step 3 "Oversized" "HTTP $oversize" ;;
+    *) fail_step 3 "an 8 KiB header got HTTP $oversize (want 200/400/413/414/431/494)" ;;
 esac
 
 pids=()
-for _ in $(seq 1 5); do
+RES=$(mktemp) || undetermined "mktemp failed (TMPDIR='${TMPDIR:-}')" "#env-no-scratch"
+cleanup() { rm -f "$RES"; [[ ${#pids[@]} -gt 0 ]] && kill "${pids[@]}" 2>/dev/null; }
+trap cleanup EXIT
+for _ in 1 2 3 4 5; do
     (timeout 5 bash -c "
         exec 3<>/dev/tcp/$CHAOS_HOST/$CHAOS_PORT 2>/dev/null
         printf 'GET /health HTTP/1.1\r\nHost: $CHAOS_HOST\r\nX-Slow: ' >&3 2>/dev/null
@@ -68,22 +205,28 @@ for _ in $(seq 1 5); do
     " >/dev/null 2>&1 || true) &
     pids+=($!)
 done
-echo "[4/6] Slow-loris: ${#pids[@]} spawned"
+pass_step 4 "Slow-loris" "${#pids[@]} spawned"
 
-RES=$(mktemp); trap "rm -f $RES; kill ${pids[*]} 2>/dev/null" EXIT
 seq 1 "$LEGIT_REQS" | xargs -n1 -P 20 -I{} \
     curl -sS -o /dev/null --max-time 5 -w "%{http_code}\n" "$HEALTH_URL" 2>/dev/null >> "$RES" || true
-for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done; wait 2>/dev/null || true
-total=$(wc -l < "$RES" | tr -d ' '); [[ "$total" -eq 0 ]] && total=1
+for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
+wait 2>/dev/null || true
+total=$(grep -c . "$RES")
+# Executed-request floor: every request must have left a status line (curl
+# writes 000 for a refused or timed-out one), else the load did not run.
+(( total == LEGIT_REQS )) ||
+    undetermined "executed-request floor: $total of $LEGIT_REQS requests recorded — the mixed load did not run" "#load-not-run"
 ok=$(awk '$1=="200"{c++} END{print c+0}' "$RES")
 pct=$((ok * 100 / total))
-echo "[5/6] Mixed-load: $ok/$total ${pct}%"
-[[ "$pct" -lt "$MIN_PCT" ]] && { echo "  FAIL"; exit 1; }
+(( pct >= MIN_PCT )) || fail_step 5 "mixed load $ok/$total = ${pct}% < ${MIN_PCT}%"
+pass_step 5 "Mixed-load" "$ok/$total ${pct}%"
 
 final=$(curl -sS --max-time 5 -o /dev/null -w "%{http_code}" "$HEALTH_URL" 2>/dev/null) || final="000"
-[[ "$final" != "200" ]] && { echo "[6/6] FAIL"; exit 1; }
-echo "[6/6] Post-chaos: PASS"
+[[ "$final" == "200" ]] || fail_step 6 "health answered HTTP $final after the chaos"
+pass_step 6 "Post-chaos"
 
+(( STEPS_OK == STEPS )) ||
+    fail_step "$STEPS" "executed-step floor — $STEPS_OK of $STEPS steps were judged and passed"
 echo
-echo "=== LLMProvider Chaos Challenge: PASSED ==="
+echo "=== $NAME: PASSED ==="
 echo "  evidence: legit=$total pct=${pct}% slow_loris=${#pids[@]} oversize=${oversize}"

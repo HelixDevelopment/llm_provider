@@ -1,77 +1,199 @@
 #!/usr/bin/env bash
-# scaling_horizontal_challenge.sh — anti-bluff Scaling Challenge for
-# LLMProvider per CONST-035 + CONST-050(B). Cascade per CONST-051(A).
+# scaling_horizontal_challenge.sh — anti-bluff Scaling Challenge per CONST-035
+# + CONST-050(B); cascaded per CONST-051(A). Drives the replica set listed in
+# <PREFIX>_SCALING_REPLICA_URLS (comma-separated base URLs, each serving
+# /health; <PREFIX> = C50_PREFIX in the module-identity block below).
 #
-# ── EXIT CODES — three-valued, and 2 is NEVER a pass ─────────────────────────
-#   0  the challenge ran against a real replica set and every assertion passed
-#   1  a real finding: the replica set was there to be tested and an assertion failed
-#   2  COULD NOT DETERMINE — $LLMPROVIDER_VD_SCALING_REPLICA_URLS is
-#      unset, or fewer than two of the listed replicas answered 200 — a
-#      horizontal-scaling claim cannot be tested against one replica.
-#      NOTHING was measured, so the subject is NOT known to be healthy.
+# Six steps, each of which must pass (the executed-step floor: a step that was
+# skipped or deleted is a finding, never a quiet pass):
+#   [1/6] at least two DISTINCT listed replicas answer 200 (a replica listed
+#         twice is one replica; one that does not answer is left out and named)
+#   [2/6] every reached replica's health body carries "status": ok|healthy|UP
+#   [3/6] SCALING_REQS_PER_REPLICA requests per replica reach
+#         SCALING_MIN_PASS_PCT % 200s (every request must be recorded)
+#   [4/6] every replica serves the same health body (uptime/timestamp removed)
+#   [5/6] load-balancer fairness, informational: total 200s across replicas
+#   [6/6] every replica still answers 200
 #
-# Why the third value exists. Every branch below that could not reach its
-# replica set used to print "PASSED (SKIP-OK)" and exit 0. That made a DNS blip, a
-# restarting replica set, an unexported variable and a typo'd URL
-# indistinguishable — BY EXIT CODE — from a genuine pass, so any caller that
-# reads the exit status (the only thing most callers read) was told the subject
-# had been tested and was fine when in fact nothing had been tested at all.
-# "Could not test" must never read as "tested and fine".
+# Usage:
+#   bash scaling_horizontal_challenge.sh
+#   bash scaling_horizontal_challenge.sh --prove-failure
+#
+# Exit (three-valued; a finding outranks a could-not-determine; 2 is NEVER a pass):
+#   0 = >= 2 distinct replicas were reached and every scaling step held
+#   1 = a real finding — a replica reported a wrong status, degraded, diverged
+#       or died, or a step was skipped (executed-step floor)
+#   2 = COULD NOT DETERMINE — an unknown argument, no replica list, fewer than
+#       two distinct replicas answering 200, a knob that is not a valid number,
+#       fewer responses recorded than requests sent, or no curl. Horizontal
+#       scaling was NOT exercised; nothing (more) was judged.
+#
+# --prove-failure (§1.1 paired proof, VSC-369; harness lib/const050b_proof.sh):
+# runs copies of THIS file against loopback stub replicas. Two healthy stubs
+# must pass (0); a replica reporting a wrong status, one failing under load,
+# two replicas serving different bodies and a replica dying right after the
+# load must each exit 1 naming their step; no list, one healthy replica plus a
+# refused port, the same replica listed twice, a malformed knob and an unknown
+# argument must exit 2; a deleted step (planted in a copy) trips the floor (1)
+# and a truncated load (planted in a copy) trips the request floor (2).
 
 set -uo pipefail
-REPLICAS="${LLMPROVIDER_VD_SCALING_REPLICA_URLS:-}"
+
+# ── module identity: the ONLY lines that differ between the copies of this file ──
+C50_MODULE="LLMProvider"
+C50_PREFIX="LLMPROVIDER_VD"
+
+usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "${BASH_SOURCE[0]}"; }
+
+PROVE=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --prove-failure) PROVE=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "COULD NOT DETERMINE: unknown argument '$1' — this challenge takes only --prove-failure." >&2
+           exit 2 ;;
+    esac
+done
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SELF="$HERE/$(basename "${BASH_SOURCE[0]}")"
+
+prove_failure() {
+    if [[ ! -r "$HERE/lib/const050b_proof.sh" ]]; then
+        echo "prove-failure: cannot determine — $HERE/lib/const050b_proof.sh is missing or unreadable"
+        return 2
+    fi
+    # shellcheck source=lib/const050b_proof.sh
+    source "$HERE/lib/const050b_proof.sh"
+    pf_begin "$SELF" "scaling challenge" curl python3 sha256sum || return $?
+    local R="${C50_PREFIX}_SCALING_REPLICA_URLS"
+    # shellcheck disable=SC2034  # *_PORT is written by pf_stub (printf -v)
+    local g_from c a a_PORT b b_PORT closed knobs=(SCALING_REQS_PER_REPLICA=20 SCALING_CONCURRENCY=5)
+    if c="$(pf_copy c1)" && pf_stub a ok && pf_stub b ok; then
+        pf_expect "C1 two healthy stub replicas pass all 6 steps" 0 "Scaling Challenge: PASSED" pf_run "$c" "$R=$a,$b" "${knobs[@]}"
+    else pf_undet "C1" "could not start the stub replicas"; fi
+    if c="$(pf_copy m1)" && pf_stub a ok && pf_stub b bad-schema; then
+        pf_expect "M1 a replica reporting status \"down\"" 1 "[2/6] FAIL" pf_run "$c" "$R=$a,$b" "${knobs[@]}"
+    else pf_undet "M1" "could not start the stub replicas"; fi
+    # counted GETs on a replica before its load: topology probe, schema probe = 2
+    if c="$(pf_copy m2)" && pf_stub a ok && pf_stub b fail-after 5; then
+        pf_expect "M2 a replica failing under load" 1 "[3/6] FAIL" pf_run "$c" "$R=$a,$b" "${knobs[@]}"
+    else pf_undet "M2" "could not start the stub replicas"; fi
+    if c="$(pf_copy m3)" && pf_stub a variant one && pf_stub b variant two; then
+        pf_expect "M3 replicas serving different bodies" 1 "[4/6] FAIL" pf_run "$c" "$R=$a,$b" "${knobs[@]}"
+    else pf_undet "M3" "could not start the stub replicas"; fi
+    # topology 1 + schema 1 + load 20 + identity 1 = 23 counted GETs
+    if c="$(pf_copy m4)" && pf_stub a ok && pf_stub b fail-after 23; then
+        pf_expect "M4 a replica dead right after the load" 1 "[6/6] FAIL" pf_run "$c" "$R=$a,$b" "${knobs[@]}"
+    else pf_undet "M4" "could not start the stub replicas"; fi
+    g_from='pass_step '; g_from+='6 "Post-scaling liveness"'
+    if c="$(pf_copy g1)" && pf_plant "$c" "$g_from" ':' && pf_stub a ok && pf_stub b ok; then
+        pf_expect "G1 a deleted step trips the executed-step floor" 1 "executed-step floor" pf_run "$c" "$R=$a,$b" "${knobs[@]}"
+    else pf_undet "G1" "could not plant the defect"; fi
+    g_from='seq '; g_from+='1 "$REQS" |'
+    if c="$(pf_copy g2)" && pf_plant "$c" "$g_from" 'seq 2 "$REQS" |' && pf_stub a ok && pf_stub b ok; then
+        pf_expect "G2 a truncated load trips the executed-request floor" 2 "executed-request floor" pf_run "$c" "$R=$a,$b" "${knobs[@]}"
+    else pf_undet "G2" "could not plant the defect"; fi
+    if c="$(pf_copy u1)"; then
+        pf_expect "U1 no replica list configured" 2 "#env-no-replicas" pf_run "$c"
+    else pf_undet "U1" "could not copy"; fi
+    if c="$(pf_copy u2)" && pf_stub a ok && pf_closed_port closed; then
+        pf_expect "U2 one healthy replica plus an unreachable one" 2 "#env-single-replica" \
+            pf_run "$c" "$R=$a,http://127.0.0.1:$closed" "${knobs[@]}"
+    else pf_undet "U2" "could not start the stub replica"; fi
+    if c="$(pf_copy u3)" && pf_stub a ok; then
+        pf_expect "U3 the same replica listed twice is one replica" 2 "#env-single-replica" pf_run "$c" "$R=$a,$a" "${knobs[@]}"
+    else pf_undet "U3" "could not start the stub replica"; fi
+    if c="$(pf_copy u4)" && pf_stub a ok && pf_stub b ok; then
+        pf_expect "U4 a knob that is not a number" 2 "#bad-knob" pf_run "$c" "$R=$a,$b" SCALING_REQS_PER_REPLICA=x
+    else pf_undet "U4" "could not start the stub replicas"; fi
+    if c="$(pf_copy u5)"; then
+        pf_expect "U5 unknown argument" 2 "unknown argument" pf_run "$c" -- --no-such-flag
+    else pf_undet "U5" "could not copy"; fi
+    pf_end
+}
+
+if [[ "$PROVE" -eq 1 ]]; then
+    prove_failure
+    exit $?
+fi
+
+# ── live challenge body ──────────────────────────────────────────────────────
+REPLICAS_VAR="${C50_PREFIX}_SCALING_REPLICA_URLS"
+REPLICAS="${!REPLICAS_VAR:-}"
 REQS="${SCALING_REQS_PER_REPLICA:-50}"
 CONC="${SCALING_CONCURRENCY:-10}"
 MIN_PCT="${SCALING_MIN_PASS_PCT:-95}"
+STEPS=6
+STEPS_OK=0
+NAME="$C50_MODULE Scaling Challenge"
 
-echo "=== LLMProvider Scaling Challenge ==="
-echo "  replicas=$REPLICAS reqs=$REQS conc=$CONC pass≥${MIN_PCT}%"
-
-if [[ -z "$REPLICAS" ]]; then
-    echo "[1/6] COULD NOT DETERMINE: LLMPROVIDER_VD_SCALING_REPLICA_URLS is unset — no replica set to test."
-    echo "  Nothing was measured. LLMProvider Scaling Challenge is NOT known to be healthy."
-    echo "=== LLMProvider Scaling Challenge: COULD NOT DETERMINE (#env-no-replicas) ==="
+pass_step() { STEPS_OK=$((STEPS_OK + 1)); echo "[$1/$STEPS] $2: PASS${3:+ ($3)}"; }
+fail_step() { echo "[$1/$STEPS] FAIL: $2"; echo "=== $NAME: FAILED ==="; exit 1; }
+undetermined() {
+    echo "COULD NOT DETERMINE: $1"
+    echo "  Nothing (more) was judged. $NAME is NOT known to be healthy."
+    echo "=== $NAME: COULD NOT DETERMINE ($2) ==="
     exit 2
-fi
+}
+
+echo "=== $C50_MODULE Scaling Challenge ==="
+echo "  replicas=$REPLICAS reqs=$REQS conc=$CONC pass>=${MIN_PCT}%"
+
+for tool in curl sha256sum; do
+    command -v "$tool" >/dev/null 2>&1 || undetermined "'$tool' is not on PATH" "#env-no-tool"
+done
+[[ -n "$REPLICAS" ]] || undetermined "$REPLICAS_VAR is unset — no replica set to test" "#env-no-replicas"
+for knob in REQS CONC; do
+    [[ "${!knob}" =~ ^[1-9][0-9]*$ ]] ||
+        undetermined "$knob='${!knob}' (SCALING_*) is not a positive integer" "#bad-knob"
+done
+[[ "$MIN_PCT" =~ ^[1-9][0-9]*$ ]] && (( MIN_PCT <= 100 )) ||
+    undetermined "SCALING_MIN_PASS_PCT='$MIN_PCT' is not a percentage in 1..100" "#bad-knob"
 
 IFS=',' read -r -a URLS <<< "$REPLICAS"
 REACH=()
+declare -A SEEN=()
 for u in "${URLS[@]}"; do
-    u="${u// /}"; [[ -z "$u" ]] && continue
+    u="${u// /}"; u="${u%/}"
+    [[ -z "$u" ]] && continue
+    if [[ -n "${SEEN[$u]:-}" ]]; then echo "  duplicate (counted once): $u"; continue; fi
+    SEEN[$u]=1
     c=$(curl -sS --max-time 5 -o /dev/null -w "%{http_code}" "$u/health" 2>/dev/null) || c="000"
-    [[ "$c" == "200" ]] && REACH+=("$u") && echo "  reachable: $u"
+    if [[ "$c" == "200" ]]; then REACH+=("$u"); echo "  reachable: $u"
+    else echo "  NOT reachable (HTTP $c), left out: $u"; fi
 done
-if [[ ${#REACH[@]} -lt 2 ]]; then
-    echo "[1/6] COULD NOT DETERMINE: only ${#REACH[@]} of ${#URLS[@]} replica(s) answered 200 — need at least 2."
-    echo "  Nothing was measured. LLMProvider Scaling Challenge is NOT known to be healthy."
-    echo "=== LLMProvider Scaling Challenge: COULD NOT DETERMINE (#env-single-replica) ==="
-    exit 2
-fi
-echo "[1/6] Topology: ${#REACH[@]} replicas — PASS"
+[[ ${#REACH[@]} -ge 2 ]] ||
+    undetermined "only ${#REACH[@]} distinct replica(s) of ${#SEEN[@]} listed answered 200 — need at least 2" "#env-single-replica"
+pass_step 1 "Topology" "${#REACH[@]} replicas"
 
+# Bash's own regex, NOT `printf ... | grep -qE`: under `set -o pipefail`, grep
+# -q closing the pipe on a match kills printf with SIGPIPE (141) and pipefail
+# promotes it — the check would FAIL BECAUSE the status matched.
+status_re='"status"[[:space:]]*:[[:space:]]*"(ok|healthy|UP)"'
 for u in "${REACH[@]}"; do
     b=$(curl -sS --max-time 5 "$u/health" 2>/dev/null || true)
-    # Bash's own regex, NOT `printf ... | grep -qE`: under the `set -o pipefail`
-    # above, grep -q closing the pipe on a match kills printf with SIGPIPE (141)
-    # and pipefail promotes it — the check would FAIL BECAUSE the status matched.
-    status_re='"status"[[:space:]]*:[[:space:]]*"(ok|healthy|UP)"'
-    [[ $b =~ $status_re ]] || { echo "[2/6] FAIL: $u"; exit 1; }
+    [[ $b =~ $status_re ]] || fail_step 2 "$u health body carries no \"status\": ok|healthy|UP"
 done
-echo "[2/6] Schema sanity: PASS"
+pass_step 2 "Schema sanity"
 
-declare -A OK
+declare -A OK=()
 for u in "${REACH[@]}"; do
-    r=$(mktemp)
+    r=$(mktemp) || undetermined "mktemp failed (TMPDIR='${TMPDIR:-}')" "#env-no-scratch"
     seq 1 "$REQS" | xargs -n1 -P "$CONC" -I{} \
         curl -sS -o /dev/null --max-time 5 -w "%{http_code}\n" "$u/health" 2>/dev/null >> "$r" || true
     okc=$(awk '$1=="200"{c++} END{print c+0}' "$r")
-    tot=$(wc -l < "$r" | tr -d ' '); [[ "$tot" -eq 0 ]] && tot=1
+    tot=$(grep -c . "$r")
+    rm -f "$r"
+    # Executed-request floor: every request must have left a status line.
+    (( tot == REQS )) ||
+        undetermined "executed-request floor: $tot of $REQS requests to $u recorded — the load did not run" "#load-not-run"
     pct=$((okc * 100 / tot))
-    OK[$u]=$okc; rm -f "$r"
-    echo "  $u → $okc/$tot ($pct%)"
-    [[ "$pct" -lt "$MIN_PCT" ]] && { echo "[3/6] FAIL"; exit 1; }
+    OK[$u]=$okc
+    echo "  $u -> $okc/$tot ($pct%)"
+    (( pct >= MIN_PCT )) || fail_step 3 "$u answered $okc/$tot = ${pct}% (< ${MIN_PCT}%)"
 done
-echo "[3/6] Per-replica load: PASS"
+pass_step 3 "Per-replica load"
 
 first=$(curl -sS --max-time 5 "${REACH[0]}/health" 2>/dev/null | sed 's/"uptime[^,}]*//g; s/"timestamp[^,}]*//g')
 fh=$(printf '%s' "$first" | sha256sum | awk '{print $1}')
@@ -79,20 +201,23 @@ mm=0
 for u in "${REACH[@]:1}"; do
     b=$(curl -sS --max-time 5 "$u/health" 2>/dev/null | sed 's/"uptime[^,}]*//g; s/"timestamp[^,}]*//g')
     h=$(printf '%s' "$b" | sha256sum | awk '{print $1}')
-    [[ "$h" == "$fh" ]] && echo "  MATCH: $u" || { echo "  DIFF: $u"; mm=$((mm+1)); }
+    if [[ "$h" == "$fh" ]]; then echo "  MATCH: $u"; else echo "  DIFF: $u"; mm=$((mm + 1)); fi
 done
-[[ "$mm" -gt 0 ]] && { echo "[4/6] FAIL: $mm diverged"; exit 1; }
-echo "[4/6] Body-identity: PASS"
+(( mm == 0 )) || fail_step 4 "$mm replica(s) diverged from ${REACH[0]}"
+pass_step 4 "Body-identity"
 
-total_ok=0; for u in "${REACH[@]}"; do total_ok=$((total_ok + ${OK[$u]})); done
-echo "[5/6] LB-fairness informational: total_ok=$total_ok"
+total_ok=0
+for u in "${REACH[@]}"; do total_ok=$((total_ok + ${OK[$u]})); done
+pass_step 5 "LB-fairness (informational)" "total_ok=$total_ok"
 
 for u in "${REACH[@]}"; do
     c=$(curl -sS --max-time 5 -o /dev/null -w "%{http_code}" "$u/health" 2>/dev/null) || c="000"
-    [[ "$c" != "200" ]] && { echo "[6/6] FAIL"; exit 1; }
+    [[ "$c" == "200" ]] || fail_step 6 "$u answered HTTP $c after the load"
 done
-echo "[6/6] Post-scaling liveness: PASS"
+pass_step 6 "Post-scaling liveness"
 
+(( STEPS_OK == STEPS )) ||
+    fail_step "$STEPS" "executed-step floor — $STEPS_OK of $STEPS steps were judged and passed"
 echo
-echo "=== LLMProvider Scaling Challenge: PASSED ==="
+echo "=== $NAME: PASSED ==="
 echo "  evidence: replicas=${#REACH[@]} total_ok=${total_ok}"

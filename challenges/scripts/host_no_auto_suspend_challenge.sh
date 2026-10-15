@@ -57,8 +57,50 @@
 #
 # Contract guarded by:
 #   bash challenges/scripts/host_no_auto_suspend_contract_challenge.sh
+#
+# Usage:
+#   bash host_no_auto_suspend_challenge.sh
+#   bash host_no_auto_suspend_challenge.sh --prove-failure
+# Any other argument is COULD NOT DETERMINE (exit 2).
+#
+# --prove-failure (§1.1 paired proof, VSC-369): this is the one member of the
+# CONST-050(B) family whose subject is the HOST, not a stub-able target, so its
+# proof is the sibling host_no_auto_suspend_contract_challenge.sh, run as is: it
+# drives THIS file through eight planted host conditions (guard active, targets
+# unmasked, no marker, a suspend event, no systemctl, systemd not booted, no
+# journal, a huge journal) inside a user+mount namespace with throw-away
+# directories over /etc/systemd and /run/systemd, and asserts the exit code of
+# each — 0 for an active guard, 1 for a broken one, 2 for a host it cannot
+# measure. The real host's power configuration is never read or written. The
+# proof exits with the contract's verdict: 0 every condition held, 1 this file
+# broke its contract, 2 the sandbox could not be built (e.g. unprivileged user
+# namespaces restricted — run it under `podman unshare`) or the contract is
+# missing. NEVER a pass when it could not run.
 
 set -uo pipefail
+
+usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "${BASH_SOURCE[0]}"; }
+
+PROVE=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --prove-failure) PROVE=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "COULD NOT DETERMINE: unknown argument '$1' — this challenge takes only --prove-failure." >&2
+       exit 2 ;;
+  esac
+done
+
+if [[ "$PROVE" -eq 1 ]]; then
+  contract="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/host_no_auto_suspend_contract_challenge.sh"
+  if [[ ! -f "$contract" || ! -r "$contract" ]]; then
+    echo "prove-failure: cannot determine — the sibling proof $contract is missing or unreadable"
+    exit 2
+  fi
+  echo "prove-failure: host_no_auto_suspend_challenge.sh — running its sibling contract challenge"
+  bash "$contract"
+  exit $?
+fi
 
 PASS_COUNT=0
 FAIL_COUNT=0
