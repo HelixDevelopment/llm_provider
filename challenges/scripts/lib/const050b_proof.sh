@@ -35,8 +35,8 @@
 # not judge one.
 #
 # Every proof first runs the harness SELF-TEST (pf_selftest; also
-# `bash const050b_proof.sh --selftest`): verdict precedence, needle
-# enforcement, hermeticity (no caller variable and no caller ~/.curlrc reaches
+# `bash const050b_proof.sh --selftest`): verdict precedence, needle and
+# forbidden-text enforcement, hermeticity (no caller variable and no caller ~/.curlrc reaches
 # a case) and the loopback-only check, each against a planted defect. A failed
 # self-test fails the proof before any case runs.
 # host_no_auto_suspend_challenge.sh is the one member whose proof is a sibling:
@@ -149,13 +149,29 @@ pf_run() {
 # pf_expect NAME WANT NEEDLE CMD... — rc must equal WANT and, when NEEDLE is
 # non-empty, the combined output must contain it.
 pf_expect() {
-  local name="$1" want="$2" needle="$3" out rc
+  local name="$1" want="$2" needle="$3"
   shift 3
+  _pf_judge "$name" "$want" "$needle" "" "$@"
+}
+
+# pf_expect_without NAME WANT NEEDLE ABSENT CMD... — as pf_expect, and the
+# combined output must NOT contain ABSENT (e.g. a run exactly at a pass-rate
+# floor must not call itself permissive).
+pf_expect_without() {
+  local name="$1" want="$2" needle="$3" absent="$4"
+  shift 4
+  _pf_judge "$name" "$want" "$needle" "$absent" "$@"
+}
+
+_pf_judge() {
+  local name="$1" want="$2" needle="$3" absent="$4" out rc
+  shift 4
   out="$("$@" 2>&1)"; rc=$?
-  if [[ "$rc" -eq "$want" ]] && { [[ -z "$needle" ]] || grep -qF -- "$needle" <<<"$out"; }; then
+  if [[ "$rc" -eq "$want" ]] && { [[ -z "$needle" ]] || grep -qF -- "$needle" <<<"$out"; } &&
+     { [[ -z "$absent" ]] || ! grep -qF -- "$absent" <<<"$out"; }; then
     pf_ok "$name (rc $rc)"
   else
-    pf_bad "$name: want rc $want${needle:+ naming \"$needle\"}, got rc $rc"
+    pf_bad "$name: want rc $want${needle:+ naming \"$needle\"}${absent:+ and never \"$absent\"}, got rc $rc"
     printf '%s\n' "$out" | tail -n 6 | sed 's/^/       | /'
   fi
 }
@@ -168,6 +184,8 @@ pf_expect() {
 #   reject-oversize     drops (no response) any request with a header > 4096 B
 #   variant X           200 {"status":"ok","replica":"X"}
 #   slow-after N:SECS   GETs after the first N counted ones sleep SECS
+#   fail-window A:B     503 for counted GETs A+1..B, 200 before and after
+#                       (a target that degrades for a while and recovers)
 # A GET carrying an X-Slow header (the chaos slow-loris) is not counted.
 # The stub exits when the proof that started it exits (parent watch, 600 s cap).
 PF_STUB_PY='
@@ -207,6 +225,8 @@ class H(BaseHTTPRequestHandler):
             body = {"status": "ok", "replica": arg}
         elif mode == "slow-after" and n > int(arg.split(":")[0]):
             time.sleep(float(arg.split(":")[1]))
+        elif mode == "fail-window" and int(arg.split(":")[0]) < n <= int(arg.split(":")[1]):
+            code, body = 503, {"status": "unavailable"}
         data = json.dumps(body).encode()
         try:
             self.send_response(code)
@@ -373,6 +393,10 @@ pf_selftest() {
   ok=1; [[ "$out" == 0/1 ]] && ok=0; _pf_st "T6 a wrong rc is a FAIL ($out)" "$ok"
   out="$(PF_PASS=0; PF_FAIL=0; pf_expect st 3 "named" bash -c 'echo named; exit 3' >/dev/null; echo "$PF_PASS/$PF_FAIL")"
   ok=1; [[ "$out" == 1/0 ]] && ok=0; _pf_st "T7 the right rc naming the defect is a PASS ($out)" "$ok"
+  out="$(PF_PASS=0; PF_FAIL=0; pf_expect_without st 0 "named" "forbidden" bash -c 'echo named; echo forbidden' >/dev/null; echo "$PF_PASS/$PF_FAIL")"
+  ok=1; [[ "$out" == 0/1 ]] && ok=0; _pf_st "T13 the right rc and needle but a forbidden text present is a FAIL ($out)" "$ok"
+  out="$(PF_PASS=0; PF_FAIL=0; pf_expect_without st 0 "named" "forbidden" bash -c 'echo named' >/dev/null; echo "$PF_PASS/$PF_FAIL")"
+  ok=1; [[ "$out" == 1/0 ]] && ok=0; _pf_st "T14 the right rc and needle with the forbidden text absent is a PASS ($out)" "$ok"
   # hermeticity (pf_run): a caller variable and the caller's HOME never reach a case
   printf '%s\n' 'echo "home=$HOME canary=${PF_SELFTEST_CANARY-unset}"' > "$PF_T/st-env.sh"
   out="$(PF_SELFTEST_CANARY=leaked HOME="$PF_T/callerhome" pf_run "$PF_T/st-env.sh" 2>&1)"
