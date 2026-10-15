@@ -47,13 +47,19 @@
 # no systemctl reported as FAIL, systemctl trusted without the sd_booted probe,
 # always 0, always 2, a missing journal counted as a pass, miscounted suspend
 # broadcasts, a buffered journal, a fabricated PASS. Planted in this gate's own
-# copy: a deleted assertion (floor, exit 1) and a sandbox that cannot be built
-# (exit 2). Plus: unknown argument, missing challenge-under-test, no unshare(1),
-# unusable TMPDIR and an inapplicable case-8 cap (exit 2), and a finding under
-# that cap (exit 1). Exits 0 only when every case holds, 1 when any does not,
-# 2 when the proof could not judge a case — e.g. on a host whose unprivileged
-# user namespaces are restricted (Ubuntu's apparmor_restrict_unprivileged_userns),
+# copy: a deleted assertion (floor, exit 1), a sandbox mount that fails (rc 99)
+# and a sandbox command that exits before the challenge without rc 99 (only the
+# SANDBOX-READY marker catches it) — both exit 2. Plus: unknown argument,
+# missing challenge-under-test, no unshare(1), an unshare(1) that cannot build
+# a namespace, unusable TMPDIR and an inapplicable case-8 cap (exit 2), and a
+# finding under that cap (exit 1). Exits 0 only when every case holds, 1 when
+# any does not, 2 when the proof could not judge a case — e.g. on a host whose
+# unprivileged user namespaces are restricted (Ubuntu's
+# apparmor_restrict_unprivileged_userns),
 # where every sandboxed case is reported UNDETERMINED, never passed.
+#
+# On such a host, every exit 0 of this gate and of its proof has been measured
+# under rootless podman's namespace: `podman unshare bash <this file> [...]`.
 
 set -uo pipefail
 
@@ -155,9 +161,14 @@ prove_failure() {
     pf_expect "U3 no unshare(1) on PATH" 2 "unshare(1) not available" env PATH="$d/path" TMPDIR="$PF_T/tmp" "$BASH" "$d/$gname"
   else pf_undet "U3" "could not build a PATH without unshare"; fi
   d="$(pf_case u4)" && pf_expect "U4 TMPDIR unusable (mktemp fails)" 2 "mktemp" env TMPDIR="$PF_T/no-such-dir" bash "$d/$gname"
+  # U6: an unshare(1) that exists but cannot build a namespace (a stub that
+  # fails) must stop the gate at its up-front probe, before any case runs.
+  if d="$(pf_case u6)" && mkdir -p "$d/stub" && printf '#!%s\nexit 1\n' "$BASH" > "$d/stub/unshare" && chmod 755 "$d/stub/unshare"; then
+    pf_expect "U6 unshare present but failing -rm true" 2 "namespaces are unavailable" env PATH="$d/stub:$PATH" TMPDIR="$PF_T/tmp" "$BASH" "$d/$gname"
+  else pf_undet "U6" "could not build the stub"; fi
 
   # --- cases that drive the sandboxed challenge -----------------------------
-  local sb_cases=(C0 K1 K2 K3 K4 K5 K6 K7 K8 G1 G2 U5 F1)
+  local sb_cases=(C0 K1 K2 K3 K4 K5 K6 K7 K8 G1 G2 G3 U5 F1)
   if [[ "$sandbox" -eq 0 ]]; then
     local k
     for k in "${sb_cases[@]}"; do pf_undet "$k" "$why — the case cannot be run here"; done
@@ -216,6 +227,12 @@ prove_failure() {
     if d="$(pf_case g2)" && pf_plant "$d/$gname" "$g_from" '/nonexistent-vsc370 || exit 99'; then
       pf_expect "G2 a sandbox that cannot be built is rc 2, not a FAIL" 2 "sandbox" pf_gate "$d"
     else pf_undet "G2" "could not plant the defect"; fi
+    # G3: the sandbox command itself fails without reaching the challenge and
+    # without rc 99 — only the SANDBOX-READY marker can tell that from a verdict.
+    g_from='unshare -rm'; g_from+=" bash -c '"
+    if d="$(pf_case g3)" && pf_plant "$d/$gname" "$g_from" "unshare -rm sh -c 'exit 7;"; then
+      pf_expect "G3 a sandbox that exits before the challenge (rc 7, no marker) is rc 2" 2 "sandbox" pf_gate "$d"
+    else pf_undet "G3" "could not plant the defect"; fi
     # U5: an address-space limit (soft+hard) below case 8's cap makes case 8 unjudgeable.
     d="$(pf_case u5)" && pf_expect "U5 case-8 cap not applicable is rc 2, not a FAIL" 2 "ulimit" \
       bash -c 'ulimit -v 150000 && TMPDIR="$1" exec bash "$2"' _ "$PF_T/tmp" "$d/$gname"

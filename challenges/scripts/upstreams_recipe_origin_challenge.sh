@@ -49,8 +49,9 @@
 #   6. origin's own URL is named by at least one recipe — the canonical
 #      destination is always among the publish targets.
 #
-# A credential embedded in a remote or recipe URL (https://user:token@host/...)
-# is never printed: every URL is shown with its userinfo replaced by '***'.
+# A credential embedded in a remote or recipe URL (https://user:token@host/...
+# or scp-style user:token@host:org/repo) is never printed: every URL is shown
+# with its userinfo replaced by '***'.
 #
 # Usage:
 #   bash upstreams_recipe_origin_challenge.sh
@@ -71,10 +72,11 @@
 # recipe without a trailing newline, origin covered by no recipe, an
 # organisation differing only in case, an untracked host and an unparsable URL
 # must each exit 1 and name the recipe; clean sets (including a repo-name case
-# difference and a URL-style recipe) exit 0; a credential in a URL is never
-# printed; a deleted assertion trips the floor (exit 1); no upstreams/, no
-# origin, no repository, no recipe, an unknown argument, an unparsable origin
-# and an unreadable recipe exit 2, and a finding outranks an unreadable recipe.
+# difference and a URL-style recipe) exit 0; a credential in a URL-style or
+# scp-style URL is never printed; a deleted assertion trips the floor (exit 1);
+# no upstreams/, no origin, no repository, no recipe, an unknown argument, an
+# unparsable origin and an unreadable recipe exit 2, and a finding outranks
+# an unreadable recipe.
 # Exits 0 only when every case holds, 1 when any does not, 2 when the proof
 # could not judge a case (e.g. as root, where chmod 000 does not deny a read).
 
@@ -231,6 +233,18 @@ prove_failure() {
     if [[ "$rc" -eq 0 ]] && ! grep -qF -- "$tok" <<<"$out"; then pf_ok "R1 credential in a remote URL is not printed (rc 0)"
     else pf_bad "R1 credential in a remote URL: want rc 0 and the token absent, got rc $rc, token printed $(grep -cF -- "$tok" <<<"$out") time(s)"; fi
   else pf_undet "R1" "could not build the repository"; fi
+  # R2: scp-style userinfo (user:token@host:org/repo) in a recipe or in origin
+  # must not be printed either — not on the "->" line, not in a finding.
+  local scp="u:${tok}@github.com:proof-org/Proofrepo.git" case_
+  for case_ in recipe origin; do
+    if [[ "$case_" == recipe ]]; then d="$(pf_std r2-recipe)" && pf_recipe "$d" scp.sh "$scp"
+    else d="$(pf_repo r2-origin "$scp")" && pf_recipe "$d" github.sh "$O"; fi
+    if [[ -n "$d" && -d "$d/upstreams" ]]; then
+      out="$(pf_gate "$d" 2>&1)"; rc=$?
+      if [[ "$rc" -eq 0 ]] && ! grep -qF -- "$tok" <<<"$out"; then pf_ok "R2 scp-style credential in the $case_ URL is not printed (rc 0)"
+      else pf_bad "R2 scp-style credential in the $case_ URL: want rc 0 and the token absent, got rc $rc, token printed $(grep -cF -- "$tok" <<<"$out") time(s)"; fi
+    else pf_undet "R2 ($case_)" "could not build the repository"; fi
+  done
   # G1: the gate's own per-recipe executed-count floor, planted in its copy.
   g_from='assert_pass "$name: '; g_from+='executable"'
   if d="$(pf_std g1)" && pf_plant "$d/challenges/scripts/$(basename "$SELF")" "$g_from" ':'; then
@@ -288,8 +302,9 @@ assert_undet() { echo "UNDETERMINED: $*" >&2; UNDET_COUNT=$((UNDET_COUNT + 1)); 
 note()         { echo "NOTE: $*"; NOTE_COUNT=$((NOTE_COUNT + 1)); }
 
 # Shows a URL with any userinfo of a URL-style remote replaced by '***', so a
-# token embedded as https://user:token@host/... is never printed. scp-style
-# `user@host:path` carries no password and is shown as is.
+# token embedded as https://user:token@host/... is never printed; the same for
+# scp-style `user:token@host:path`. Plain scp-style `user@host:path` carries no
+# password and is shown as is.
 redact_url() {
   local u="$1" scheme rest auth
   if [[ "$u" == *://* ]]; then
@@ -298,6 +313,9 @@ redact_url() {
       printf '%s://***@%s%s' "$scheme" "${auth##*@}" "${rest#"$auth"}"
       return 0
     fi
+  elif [[ "$u" =~ ^[^/@:]*:[^/@]*@(.+)$ ]]; then
+    printf '***@%s' "${BASH_REMATCH[1]}"
+    return 0
   fi
   printf '%s' "$u"
 }
@@ -335,6 +353,9 @@ fi
 # recognised.
 parse_host_org_repo() {
   local url="$1" host path
+  # scp-style user:password@host:path — the userinfo is never part of the
+  # host and must never be printed; drop it before parsing.
+  if [[ "$url" != *://* && "$url" =~ ^[^/@:]*:[^/@]*@(.+)$ ]]; then url="${BASH_REMATCH[1]}"; fi
   case "$url" in
     *://*)  path="${url#*://}"; host="${path%%/*}"; host="${host##*@}"; path="${path#*/}" ;;
     *:*)    host="${url%%:*}"; host="${host##*@}"; path="${url#*:}" ;;

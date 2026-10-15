@@ -23,10 +23,12 @@
 #      that evidence line is a finding, not a pass.
 #
 # Credential handling (CONST-042): the credential file is sourced into this
-# process; ONLY ApiKey_<PROBE_PROVIDER> is sent anywhere, and only to the
-# probe's endpoint, which is HuggingFace's. PROBE_PROVIDER is therefore limited
-# to HuggingFace — the previous body accepted any provider name and sent that
-# provider's key to huggingface.co. No key value is ever printed.
+# process with its stdout discarded (a file that echoes its keys prints
+# nothing here; its stderr is kept); ONLY ApiKey_<PROBE_PROVIDER> is sent
+# anywhere, and only to the probe's endpoint, which is HuggingFace's.
+# PROBE_PROVIDER is therefore limited to HuggingFace — the previous body
+# accepted any provider name and sent that provider's key to huggingface.co.
+# No key value is ever printed.
 #
 # Honest boundary: the model list is a public endpoint, so whether HuggingFace
 # rejects a WRONG bearer token was not measured here (a live run reads real
@@ -48,7 +50,8 @@
 #      exited 0 without its evidence line
 #   2  COULD NOT DETERMINE — an unknown argument, a PROBE_PROVIDER with no wired
 #      endpoint, no readable credential file, no key or a key that is not
-#      exported, no usable go toolchain, a module that cannot be loaded,
+#      exported, a key value containing a line break, no usable go toolchain,
+#      a module that cannot be loaded,
 #      mktemp failing, the endpoint unreachable or answering 5xx, or an
 #      unrecognised probe exit. NOTHING about the wiring was established.
 #
@@ -62,15 +65,19 @@
 # Runs copies of this module under $TMPDIR with `env -i`, a scratch HOME,
 # fixture credential files holding synthetic keys, GOPROXY=off, and the probe
 # endpoint rewritten to a fake model-list server on 127.0.0.1 that checks the
-# bearer token. An empty list, an empty id, a 404, a non-JSON body, a Scan()
-# that loses the key, a Get() that tampers with it, a probe without its
-# evidence line and wiring that does not compile must exit 1; a non-HuggingFace
-# PROBE_PROVIDER must exit 2, and a credential file that re-points it must not
-# take effect, with no other key reaching the endpoint; an unknown
-# argument, no credential file, no key, an unexported key, an unreachable or
-# 503 endpoint, no go, an unusable TMPDIR, an unreadable credential file and an
-# unloadable module must exit 2. Exits 0 only when every case holds, 1 when any
-# does not, 2 when the proof could not judge a case.
+# bearer token and logs every request in full; every fixture also exports a
+# synthetic ApiKey_Nvidia, and in EVERY case neither synthetic key may appear
+# in the output nor the Nvidia key anywhere in a request (line, headers, body).
+# An empty list, an empty id, a 404, a non-JSON body, a Scan() that loses the
+# key, a Get() that tampers with it, a probe without its evidence line and
+# wiring that does not compile must exit 1; a non-HuggingFace PROBE_PROVIDER
+# must exit 2, and a credential file that re-points it must not take effect; a
+# credential file that echoes its keys must still exit 0 with nothing printed;
+# an unknown argument, no credential file, no key, an unexported key, an
+# unreachable or 503 endpoint, no go, an unusable TMPDIR, an unreadable
+# credential file, an unloadable module and a key value with a line break must
+# exit 2. Exits 0 only when every case holds, 1 when any does not, 2 when the
+# proof could not judge a case.
 
 set -o pipefail
 # Deliberately NOT using -u (or -e) here: ~/api_keys.sh re-exports some env
@@ -99,14 +106,21 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # API_KEYS_FILE names a fixture holding SYNTHETIC keys only, GOPROXY=off and
 # GOTOOLCHAIN=local keep the build off the network, and the copy's probe
 # endpoint is rewritten (exactly once) to a fake model-list server on 127.0.0.1
-# that compares the bearer token and logs every Authorization header it gets.
-# A case holds only when the exit code matches AND the output names the defect.
+# that compares the bearer token and logs EVERY request in full (request line,
+# all headers, body). Every fixture also exports a synthetic ApiKey_Nvidia. A
+# case holds only when the exit code matches AND the output names the defect
+# AND no synthetic key appears in the output AND no request made during the
+# case carries the Nvidia key anywhere (only ApiKey_HuggingFace may be sent).
 # Exit: 0 every case held, 1 any case did not, 2 the proof could not judge one.
 PF_T=""
 PF_SRV=""
 PF_PASS=0
 PF_FAIL=0
 PF_UNDET=0
+PF_SECRETS=()      # values that must never appear in a case's output
+PF_REQLOG=""       # the fake endpoint's full request log
+PF_NOSEND=""       # a value that must never appear in any request
+PF_LAST_OUT=""     # the output of the last pf_expect run
 pf_cleanup() {
   if [[ -n "$PF_SRV" ]]; then kill "$PF_SRV" 2>/dev/null; wait "$PF_SRV" 2>/dev/null; fi
   [[ -n "$PF_T" && -d "$PF_T" ]] && { chmod -R u+rwx "$PF_T" 2>/dev/null; rm -rf "$PF_T"; }
@@ -129,14 +143,25 @@ pf_plant() {
 }
 # pf_expect NAME WANT NEEDLE CMD... — rc must equal WANT and, when NEEDLE is
 # non-empty, the combined output must contain it.
+# Also: no PF_SECRETS value in the output, and no request logged during the
+# case carries PF_NOSEND.
 pf_expect() {
-  local name="$1" want="$2" needle="$3" out rc
+  local name="$1" want="$2" needle="$3" out rc pre=0 sec leak=""
   shift 3
+  [[ -n "$PF_REQLOG" ]] && pre="$(wc -l < "$PF_REQLOG")"
   out="$("$@" 2>&1)"; rc=$?
-  if [[ "$rc" -eq "$want" ]] && { [[ -z "$needle" ]] || grep -qF -- "$needle" <<<"$out"; }; then
+  PF_LAST_OUT="$out"
+  for sec in "${PF_SECRETS[@]}"; do
+    grep -qF -- "$sec" <<<"$out" && leak+=" a synthetic key was PRINTED;"
+  done
+  if [[ -n "$PF_REQLOG" && -n "$PF_NOSEND" ]] && tail -n +"$((pre + 1))" "$PF_REQLOG" | grep -qF -- "$PF_NOSEND"; then
+    leak+=" the Nvidia key reached the endpoint;"
+  fi
+  if [[ -z "$leak" && "$rc" -eq "$want" ]] && { [[ -z "$needle" ]] || grep -qF -- "$needle" <<<"$out"; }; then
     pf_ok "$name (rc $rc)"
   else
-    pf_bad "$name: want rc $want${needle:+ naming \"$needle\"}, got rc $rc"
+    pf_bad "$name: want rc $want${needle:+ naming \"$needle\"}, got rc $rc${leak:+ —$leak}"
+    for sec in "${PF_SECRETS[@]}"; do out="${out//"$sec"/<synthetic-key>}"; done
     printf '%s\n' "$out" | tail -n 6 | sed 's/^/       | /'
   fi
 }
@@ -156,12 +181,20 @@ prove_failure() {
   trap pf_cleanup EXIT
   mkdir -p "$PF_T/home" "$PF_T/tmp" || { echo "prove-failure: cannot determine — scratch dirs"; return 2; }
   # Fixture credential files — synthetic values only.
-  printf "export ApiKey_HuggingFace='%s'\n" "$key" > "$PF_T/keys_ok.sh"
-  printf "export ApiKey_SomeOtherProvider='synthetic-other'\n" > "$PF_T/keys_nokey.sh"
-  printf "ApiKey_HuggingFace='%s'\n" "$key" > "$PF_T/keys_unexported.sh"
+  # Every fixture also exports the synthetic Nvidia key, so a probe that sends
+  # any other key is caught in every case, not only in K1/K2.
+  local nv
+  nv="$(printf "export ApiKey_Nvidia='%s'" "$nkey")"
+  printf "export ApiKey_HuggingFace='%s'\n%s\n" "$key" "$nv" > "$PF_T/keys_ok.sh"
+  printf "export ApiKey_SomeOtherProvider='synthetic-other'\n%s\n" "$nv" > "$PF_T/keys_nokey.sh"
+  printf "ApiKey_HuggingFace='%s'\n%s\n" "$key" "$nv" > "$PF_T/keys_unexported.sh"
+  # A credential file that prints its keys while it is sourced.
+  printf "export ApiKey_HuggingFace='%s'\n%s\necho \"loaded \$ApiKey_HuggingFace \$ApiKey_Nvidia\"\n" "$key" "$nv" > "$PF_T/keys_echo.sh"
+  # A key value with a line break in it (Go refuses it as a header value).
+  printf "export ApiKey_HuggingFace=\$'%s-line1\\n%s-line2'\n%s\n" "$key" "$key" "$nv" > "$PF_T/keys_newline.sh"
   printf "export ApiKey_HuggingFace='%s'\nexport ApiKey_Nvidia='%s'\n" "$key" "$nkey" > "$PF_T/keys_nvidia.sh"
   printf "export ApiKey_HuggingFace='%s'\nexport ApiKey_Nvidia='%s'\nPROBE_PROVIDER=Nvidia\n" "$key" "$nkey" > "$PF_T/keys_repoint.sh"
-  printf "export ApiKey_HuggingFace='%s'\n" "$key" > "$PF_T/keys_unreadable.sh"
+  printf "export ApiKey_HuggingFace='%s'\n%s\n" "$key" "$nv" > "$PF_T/keys_unreadable.sh"
   chmod 000 "$PF_T/keys_unreadable.sh"
   cat > "$PF_T/fake_endpoint.py" <<'PY'
 import http.server, os, sys
@@ -173,8 +206,13 @@ BODIES = {"ok": (200, b'[{"id":"proof/model-a"},{"id":"proof/model-b"}]'),
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         auth = self.headers.get("Authorization", "")
+        n = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(n).decode("utf-8", "replace") if n > 0 else ""
         with open(log_file, "a") as f:
-            f.write(auth + "\n")
+            f.write(self.requestline + "\n")
+            for k, v in self.headers.items():
+                f.write(k + ": " + v + "\n")
+            f.write("body: " + body.replace("\n", "\\n") + "\n")
         mode = open(mode_file).read().strip()
         if not self.path.startswith("/api/models"):
             code, body = 404, b'{"error":"no such path"}'
@@ -196,8 +234,8 @@ os.rename(port_file + ".tmp", port_file)
 srv.serve_forever()
 PY
   printf 'ok\n' > "$PF_T/mode"
-  : > "$PF_T/auth.log"
-  python3 -I "$PF_T/fake_endpoint.py" "$PF_T/mode" "$PF_T/auth.log" "$PF_T/port" "$key" &
+  : > "$PF_T/requests.log"
+  python3 -I "$PF_T/fake_endpoint.py" "$PF_T/mode" "$PF_T/requests.log" "$PF_T/port" "$key" &
   PF_SRV=$!
   for ((i = 0; i < 100; i++)); do [[ -s "$PF_T/port" ]] && break; sleep 0.1; done
   port="$(cat "$PF_T/port" 2>/dev/null)"
@@ -226,6 +264,9 @@ PY
   }
   pf_mode() { printf '%s\n' "$1" > "$PF_T/mode"; }
   local K="$PF_T/keys_ok.sh"
+  PF_SECRETS=("$key" "$nkey")
+  PF_REQLOG="$PF_T/requests.log"
+  PF_NOSEND="$nkey"
 
   pf_mode ok
   if d="$(pf_case c0)"; then pf_expect "C0 clean control: key resolved, list fetched" 0 "OK: discovered 2 models" pf_run "$d" "$K"
@@ -254,19 +295,17 @@ PY
     pf_expect "M8 the apikeys wiring does not compile" 1 "undefinedSymbolVSC370" pf_run "$d" "$K"
   else pf_undet "M8" "could not plant the defect"; fi
   # K1: a PROBE_PROVIDER other than HuggingFace must never send its key anywhere
-  : > "$PF_T/auth.log"
   if d="$(pf_case k1)"; then
     pf_expect "K1 PROBE_PROVIDER=Nvidia is refused (rc 2)" 2 "PROBE_PROVIDER" pf_run "$d" "$PF_T/keys_nvidia.sh" PROBE_PROVIDER=Nvidia
-    if grep -qF -- "$nkey" "$PF_T/auth.log"; then pf_bad "K1b the Nvidia key reached the HuggingFace endpoint"
-    else pf_ok "K1b no Nvidia key reached the HuggingFace endpoint"; fi
   else pf_undet "K1" "could not build the case"; fi
   # K2: the credential file itself re-points PROBE_PROVIDER after the check
-  : > "$PF_T/auth.log"
   if d="$(pf_case k2)"; then
     pf_expect "K2 a credential file cannot re-point PROBE_PROVIDER" 0 "OK: discovered 2 models from HuggingFace" pf_run "$d" "$PF_T/keys_repoint.sh"
-    if grep -qF -- "$nkey" "$PF_T/auth.log"; then pf_bad "K2b the Nvidia key reached the HuggingFace endpoint"
-    else pf_ok "K2b no Nvidia key reached the HuggingFace endpoint"; fi
   else pf_undet "K2" "could not build the case"; fi
+  # S1: a credential file that prints its keys while sourced must not leak them
+  if d="$(pf_case s1)"; then
+    pf_expect "S1 a credential file's own output is not printed" 0 "OK: discovered 2 models" pf_run "$d" "$PF_T/keys_echo.sh"
+  else pf_undet "S1" "could not build the case"; fi
   # U1..U10: could not determine
   if d="$(pf_case u1)"; then pf_expect "U1 unknown argument" 2 "unknown argument" pf_run "$d" "$K" -- --no-such-flag
   else pf_undet "U1" "could not build the case"; fi
@@ -295,6 +334,15 @@ PY
   if d="$(pf_case u10)" && rm -f "$d/go.mod"; then
     pf_expect "U10 module cannot be loaded is rc 2, not a FAIL" 2 "cannot load the module" pf_run "$d" "$K"
   else pf_undet "U10" "could not build the case"; fi
+  if d="$(pf_case u11)"; then
+    pf_expect "U11 key value with a line break is rc 2, not 'unreachable'" 2 "line break" pf_run "$d" "$PF_T/keys_newline.sh"
+    if grep -qF -- "probe exit" <<<"$PF_LAST_OUT"; then pf_bad "U11b the probe still ran with a line-break key (its verdict decided the rc)"
+    else pf_ok "U11b the probe was not run with a line-break key"; fi
+  else pf_undet "U11" "could not build the case"; fi
+  # N1: over the WHOLE request log of every case, the Nvidia key never left.
+  if [[ ! -s "$PF_REQLOG" ]]; then pf_undet "N1" "the fake endpoint logged no request at all"
+  elif grep -qF -- "$nkey" "$PF_REQLOG"; then pf_bad "N1 the Nvidia key appears in a logged request"
+  else pf_ok "N1 no logged request (line, headers, body) carries the Nvidia key"; fi
   echo "prove-failure: $PF_PASS passed, $PF_FAIL failed, $PF_UNDET undetermined"
   [[ "$PF_FAIL" -gt 0 ]] && return 1
   [[ "$PF_UNDET" -gt 0 ]] && return 2
@@ -329,8 +377,11 @@ if [[ ! -r "$API_KEYS_FILE" ]]; then
   exit 2
 fi
 
+# Its stdout is discarded: a credential file that echoes its keys while it is
+# sourced would otherwise print them here. Its stderr is kept (e.g. the
+# readonly notice when it tries to re-point PROBE_PROVIDER).
 # shellcheck source=/dev/null
-source "$API_KEYS_FILE"
+source "$API_KEYS_FILE" >/dev/null
 
 PROBE_VAR="ApiKey_${PROBE_PROVIDER}"
 PROBE_VALUE="${!PROBE_VAR-}"
@@ -345,6 +396,14 @@ fi
 if ! [[ "$(declare -p "$PROBE_VAR" 2>/dev/null)" =~ ^declare\ -[A-Za-z]*x ]]; then
   echo "COULD NOT DETERMINE: ${PROBE_VAR} is set in ${API_KEYS_FILE} but not exported,"
   echo "  so it never reaches the probe's environment. NOTHING was measured."
+  exit 2
+fi
+# Go refuses a header value with CR/LF in it as a transport error, which would
+# be reported as "endpoint unreachable". Caught here, by name, without
+# printing the value.
+if [[ "$PROBE_VALUE" == *$'\n'* || "$PROBE_VALUE" == *$'\r'* ]]; then
+  echo "COULD NOT DETERMINE: the ${PROBE_VAR} credential value contains a line break — it cannot"
+  echo "  be sent as a bearer token. Fix the credential file. NOTHING was measured."
   exit 2
 fi
 unset PROBE_VALUE
