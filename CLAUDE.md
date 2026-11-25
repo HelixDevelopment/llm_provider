@@ -338,7 +338,7 @@ This module is extracted from the parent project's `internal/llm` package. In th
 ## Publishing (upstreams/)
 
 This repository is published to more than one organisation on purpose: the
-canonical lineage is `git@github.com:HelixDevelopment/LLMProvider.git`
+canonical lineage is `git@github.com:HelixDevelopment/llm_provider.git`
 (`upstreams/github.sh`, and this module's registered submodule URL in its
 consuming projects), with `vasic-digital` mirrors on GitHub and GitLab
 (`upstreams/vasic_digital_github.sh`, `upstreams/gitlab.sh`,

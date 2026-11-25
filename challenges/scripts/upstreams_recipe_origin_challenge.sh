@@ -191,11 +191,15 @@ prove_failure() {
   if d="$(pf_std c0)"; then pf_expect "C0 clean control: 2 recipes, origin covered" 0 "9 pass, 0 fail" pf_gate "$d"
   else pf_undet "C0" "could not build the repository"; fi
   if d="$(pf_std a1)" && pf_recipe "$d" gitlab.sh 'git@gitlab.com:proof-org/proofrepo.git'; then
-    pf_expect "A1 repo-name case difference is a NOTE, not a finding" 0 "differs from origin's 'Proofrepo' only in case" pf_gate "$d"
+    pf_expect "A1 repo-name case difference is a NOTE, not a finding" 0 "differs from origin's 'Proofrepo' only in case or separators" pf_gate "$d"
   else pf_undet "A1" "could not build the repository"; fi
   if d="$(pf_repo a2 "$O")" && pf_recipe "$d" github.sh 'https://github.com/proof-org/Proofrepo.git'; then
     pf_expect "A2 URL-style recipe equals the scp-style origin" 0 "5 pass, 0 fail" pf_gate "$d"
   else pf_undet "A2" "could not build the repository"; fi
+  if d="$(pf_std a3)" && pf_remote "$d" renamed 'git@github.com:proof-org/Proof_Repo.git' &&
+     pf_recipe "$d" renamed.sh 'git@github.com:proof-org/Proof_Repo.git'; then
+    pf_expect "A3 separator-only rename (Proof_Repo vs Proofrepo) is a NOTE, not a finding" 0 "renamed.sh: 'Proof_Repo' differs from origin's 'Proofrepo' only in case or separators" pf_gate "$d"
+  else pf_undet "A3" "could not build the repository"; fi
   # M1..M9: one planted wrong destination / defect each
   if d="$(pf_std m1)" && pf_recipe "$d" evil.sh 'git@github.com:evil-org/Proofrepo.git'; then
     pf_expect "M1 foreign-organisation recipe" 1 "evil.sh: 'github.com/evil-org/proofrepo' is NOT a configured remote" pf_gate "$d"
@@ -371,13 +375,18 @@ parse_host_org_repo() {
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
-# Canonical key for "the same repository": host and org exact, repo lowercased.
+# Repository-name comparison form: lowercased with '_' and '-' removed. A forge rename may change only separators or case
+# (measured 2026-11-25: HelixDevelopment/LLMProvider -> HelixDevelopment/llm_provider, a 301 to the same repository id);
+# a genuinely different name (Otherrepo vs Proofrepo) still differs.
+norm_repo() { lower "$1" | tr -d '_-'; }
+
+# Canonical key for "the same repository": host and org exact, repo in norm_repo form.
 repo_key() {
   local parts host org repo
   parts="$(parse_host_org_repo "$1")" || return 1
   host="${parts%%$'\t'*}"; parts="${parts#*$'\t'}"
   org="${parts%%$'\t'*}"; repo="${parts##*$'\t'}"
-  printf '%s/%s/%s\n' "$(lower "$host")" "$org" "$(lower "$repo")"
+  printf '%s/%s/%s\n' "$(lower "$host")" "$org" "$(norm_repo "$repo")"
 }
 
 if ! origin_key="$(repo_key "$ORIGIN_URL")"; then
@@ -447,10 +456,10 @@ for recipe in "${recipes[@]}"; do
     assert_fail "$name: '$key' is NOT a configured remote of this checkout — a push through this recipe would publish this tree somewhere this checkout does not track"
   fi
 
-  if [[ "$(lower "$repo")" == "$(lower "$ORIGIN_REPO")" ]]; then
+  if [[ "$(norm_repo "$repo")" == "$(norm_repo "$ORIGIN_REPO")" ]]; then
     assert_pass "$name: repository '$repo' matches origin"
     [[ "$repo" != "$ORIGIN_REPO" ]] && \
-      note "$name: '$repo' differs from origin's '$ORIGIN_REPO' only in case"
+      note "$name: '$repo' differs from origin's '$ORIGIN_REPO' only in case or separators"
   else
     assert_fail "$name: repository '$repo' != origin's '$ORIGIN_REPO'"
   fi
