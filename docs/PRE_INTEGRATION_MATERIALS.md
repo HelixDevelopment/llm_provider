@@ -147,7 +147,7 @@ types), `pkg/provider/`, `pkg/circuit/`, `pkg/health/`, `pkg/retry/`.
   `llmprovider.NewDefaultCircuitBreaker(...)` (`README.md` Quick Start,
   `doc.go:46-68`).
 - **Distribution slice / upstreams** (`upstreams/*.sh`):
-  - `git@github.com:HelixDevelopment/LLMProvider.git` (`upstreams/GitHub.sh`)
+  - `git@github.com:HelixDevelopment/llm_provider.git` (`upstreams/GitHub.sh`)
   - `git@github.com:vasic-digital/LLMProvider.git` (`upstreams/VasicDigitalGitHub.sh`)
   - `git@gitlab.com:vasic-digital/LLMProvider.git`
     (`upstreams/GitLab.sh`, `upstreams/VasicDigitalGitLab.sh`)
